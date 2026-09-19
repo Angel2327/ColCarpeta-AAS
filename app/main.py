@@ -4,9 +4,16 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 
 from app.config import get_config
-from app.errors import ErrorDeNegocio, manejar_error_de_negocio
+from app.errors import (
+    ErrorDeNegocio,
+    manejar_error_de_negocio,
+    manejar_error_de_validacion,
+    manejar_error_no_previsto,
+)
+from app.identidad.registro import router as registro_router
 from app.interoperabilidad.outbox import ejecutar_bandeja_de_salida
 from app.mock.registraduria import router as registraduria_router
 
@@ -28,6 +35,8 @@ app = FastAPI(
     lifespan=ciclo_de_vida,
 )
 app.add_exception_handler(ErrorDeNegocio, manejar_error_de_negocio)
+app.add_exception_handler(RequestValidationError, manejar_error_de_validacion)
+app.add_exception_handler(Exception, manejar_error_no_previsto)
 
 
 @app.middleware("http")
@@ -50,3 +59,4 @@ async def health():
 
 
 app.include_router(registraduria_router)
+app.include_router(registro_router)

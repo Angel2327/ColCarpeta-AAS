@@ -27,7 +27,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.interoperabilidad.govcarpeta import CentralizadorNoDisponible, GovCarpeta
-from app.models import Auditoria, EstadoOutbox, Outbox
+from app.models import Auditoria, Ciudadano, EstadoCiudadano, EstadoOutbox, Outbox
 
 logger = logging.getLogger("colcarpeta.outbox")
 
@@ -63,6 +63,20 @@ MANEJADORES: dict[str, Manejador] = {
     "registerCitizen": _registrar_ciudadano,
     "unregisterCitizen": _desligar_ciudadano,
     "authenticateDocument": _autenticar_documento,
+}
+
+
+async def _activar_ciudadano(session: AsyncSession, payload: dict) -> None:
+    """CU-01, paso 7: con 201 de registerCitizen el ciudadano pasa de PENDIENTE_CENTRALIZADOR a ACTIVO."""
+    ciudadano = await session.get(Ciudadano, payload["cedula"])
+    if ciudadano is not None and ciudadano.estado == EstadoCiudadano.PENDIENTE_CENTRALIZADOR:
+        ciudadano.estado = EstadoCiudadano.ACTIVO
+
+
+EfectoAlCompletar = Callable[[AsyncSession, dict], Awaitable[None]]
+
+EFECTOS_AL_COMPLETAR: dict[str, EfectoAlCompletar] = {
+    "registerCitizen": _activar_ciudadano,
 }
 
 
@@ -148,6 +162,10 @@ async def procesar_lote(
             entrada = await session.get(Outbox, entrada_id, with_for_update=True)
             assert entrada is not None
             _finalizar(entrada, intentos_previos, error, reintentable)
+            if entrada.estado == EstadoOutbox.COMPLETADO:
+                efecto = EFECTOS_AL_COMPLETAR.get(operacion)
+                if efecto is not None:
+                    await efecto(session, payload)
             if entrada.estado in (EstadoOutbox.COMPLETADO, EstadoOutbox.FALLIDO):
                 session.add(
                     Auditoria(

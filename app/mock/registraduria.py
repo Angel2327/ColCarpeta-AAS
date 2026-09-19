@@ -14,6 +14,7 @@ flujos de excepcion de CU-01 sin depender del azar:
 import asyncio
 
 from fastapi import APIRouter, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.config import get_config
@@ -42,7 +43,9 @@ async def verificar(
         raise HTTPException(status_code=504, detail="la Registraduria no respondio")
 
     if ultimo == 0:
-        raise HTTPException(status_code=404, detail={"verificado": False, "motivo": "NO_ENCONTRADO"})
+        # Cuerpo plano segun el contrato documentado: HTTPException envolveria esto en
+        # {"detail": ...} y el cliente de la Registraduria espera la forma exacta del spec.
+        return JSONResponse(status_code=404, content={"verificado": False, "motivo": "NO_ENCONTRADO"})
 
     return {
         "verificado": True,

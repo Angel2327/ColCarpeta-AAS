@@ -52,7 +52,9 @@ class Ciudadano(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
     nombre: Mapped[str] = mapped_column(String(255))
     direccion: Mapped[str] = mapped_column(String(500))
-    email_carpeta: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    # Nulo mientras el ciudadano esta en PENDIENTE_VERIFICACION: el correo se genera
+    # despues de confirmar la identidad (CU-01, paso 5).
+    email_carpeta: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     email_personal: Mapped[str] = mapped_column(String(255))
     telefono: Mapped[str] = mapped_column(String(30))
     password_hash: Mapped[str] = mapped_column(String(255))
@@ -167,7 +169,11 @@ class Auditoria(Base):
     detalle: Mapped[dict | None] = mapped_column(JSONB)
     # Nullable a proposito: los eventos sin ciudadano asociado quedan solo con `actor`
     # (p. ej. "sistema"). `actor` sigue siendo texto libre, no se reemplaza por esta FK.
-    ciudadano_id: Mapped[int | None] = mapped_column(ForeignKey("ciudadano.id"), index=True)
+    # ON DELETE SET NULL: la auditoria debe sobrevivir al ciudadano (RNF14, retencion de
+    # 5 anios) y la purga diferida no puede quedar bloqueada por sus propios eventos.
+    ciudadano_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ciudadano.id", ondelete="SET NULL"), index=True
+    )
 
     ciudadano: Mapped["Ciudadano | None"] = relationship(back_populates="auditorias")
 
