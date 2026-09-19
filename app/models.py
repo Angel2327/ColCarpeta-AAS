@@ -66,6 +66,7 @@ class Ciudadano(Base):
 
     documentos: Mapped[list["Documento"]] = relationship(back_populates="ciudadano")
     transferencias: Mapped[list["Transferencia"]] = relationship(back_populates="ciudadano")
+    auditorias: Mapped[list["Auditoria"]] = relationship(back_populates="ciudadano")
 
 
 class Documento(Base):
@@ -164,6 +165,11 @@ class Auditoria(Base):
     recurso: Mapped[str | None] = mapped_column(String(255))
     correlation_id: Mapped[str | None] = mapped_column(String(32), index=True)
     detalle: Mapped[dict | None] = mapped_column(JSONB)
+    # Nullable a proposito: los eventos sin ciudadano asociado quedan solo con `actor`
+    # (p. ej. "sistema"). `actor` sigue siendo texto libre, no se reemplaza por esta FK.
+    ciudadano_id: Mapped[int | None] = mapped_column(ForeignKey("ciudadano.id"), index=True)
+
+    ciudadano: Mapped["Ciudadano | None"] = relationship(back_populates="auditorias")
 
 
 @event.listens_for(Auditoria, "before_update")

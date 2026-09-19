@@ -38,6 +38,7 @@ class Config(BaseSettings):
     presigned_url_ttl_transfer: int = 86_400
     transfer_confirm_timeout: int = 14_400
     purge_delay_days: int = 30
+    outbox_intervalo_segundos: int = 10
 
     registraduria_api_key: str = "clave-interna-de-desarrollo"
 

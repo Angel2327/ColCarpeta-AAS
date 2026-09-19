@@ -176,3 +176,9 @@ def downgrade() -> None:
 
     op.drop_index("ix_ciudadano_email_carpeta", table_name="ciudadano")
     op.drop_table("ciudadano")
+
+    # op.drop_table no elimina el tipo ENUM de Postgres asociado: hay que borrarlo aparte.
+    estado_outbox.drop(op.get_bind(), checkfirst=True)
+    estado_transferencia.drop(op.get_bind(), checkfirst=True)
+    estado_autenticacion_documento.drop(op.get_bind(), checkfirst=True)
+    estado_ciudadano.drop(op.get_bind(), checkfirst=True)

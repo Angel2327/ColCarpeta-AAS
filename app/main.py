@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import uuid
 from contextlib import asynccontextmanager
 
@@ -5,13 +7,19 @@ from fastapi import FastAPI, Request
 
 from app.config import get_config
 from app.errors import ErrorDeNegocio, manejar_error_de_negocio
+from app.interoperabilidad.outbox import ejecutar_bandeja_de_salida
 from app.mock.registraduria import router as registraduria_router
 
 
 @asynccontextmanager
 async def ciclo_de_vida(app: FastAPI):
-    # Aqui se arranca el proceso de bandeja de salida cuando exista.
-    yield
+    tarea_outbox = asyncio.create_task(ejecutar_bandeja_de_salida())
+    try:
+        yield
+    finally:
+        tarea_outbox.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await tarea_outbox
 
 
 app = FastAPI(
