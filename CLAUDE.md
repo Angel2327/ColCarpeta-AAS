@@ -25,17 +25,27 @@ Usa `alembic revision --autogenerate` y valida contra la base real: hay Postgres
 ### Construido
 
 `app/config.py`, `app/db.py`, `app/errors.py` · `app/models.py` con las 7 tablas ·
-migraciones aplicadas · `app/interoperabilidad/govcarpeta.py` (cliente completo del
-centralizador) · `app/interoperabilidad/outbox.py` (proceso de bandeja de salida) ·
-`app/mock/registraduria.py` · `app/identidad/` (registro, correo, seguridad).
+migraciones aplicadas · `app/interoperabilidad/` (cliente del centralizador y bandeja
+de salida) · `app/mock/registraduria.py` · `app/identidad/` (registro, correo,
+seguridad, sesión, token, TOTP, dependencias) · `app/documentos/` (almacenamiento S3,
+detección de tipo, rutas).
 
-**CU-01, registro del ciudadano**: implementado, con los flujos A1, A2 y E1 a E6.
-**CU-02, inicio de sesión**: implementado, con A1, A2 y E1 a E4.
+**CU-01, registro del ciudadano**: implementado, con A1, A2 y E1 a E6. Probado de punta
+a punta contra el centralizador real.
 
-### Pendiente — 2 de los 4 flujos obligatorios de la entrega
+**CU-02, inicio de sesión**: implementado, con A1, A2 y E1 a E4. JWT RS256, segundo
+factor en modo `simulado`, bloqueo por intentos derivado de `auditoria`.
+`DELETE /api/v1/sesion` no revoca el token: vence solo a los 30 minutos.
 
-1. **CU-05** carga de documentos
-2. **CU-11** autenticación ante GovCarpeta
+**CU-05, carga de documentos**: implementado, con A2 y E1 a E5. La sustitución es
+explícita, por el campo `sustituye_a`.
+
+### Pendiente
+
+1. **CU-11** autenticación ante GovCarpeta — último flujo obligatorio.
+2. **CU-09, validación de firma digital** (A1 de CU-05): sin implementar.
+   `documento.firma_valida` queda siempre en nulo para lo que sube el ciudadano.
+   Requiere `pyHanko` para validar firmas PAdES dentro del PDF.
 
 Fuera de alcance por ahora: transferencia entre operadores (diseñada, sin implementar),
 notificaciones más allá del correo de registro, consola de administración.

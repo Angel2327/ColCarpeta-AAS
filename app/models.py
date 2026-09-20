@@ -8,9 +8,10 @@ operador_cache, autorizacion, auditoria.
 from __future__ import annotations
 
 import enum
+import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum as PgEnum, ForeignKey, Integer, String, Text, event, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum as PgEnum, ForeignKey, Integer, String, Text, Uuid, event, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -86,7 +87,9 @@ class Ciudadano(Base):
 class Documento(Base):
     __tablename__ = "documento"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # UUID, no serial: el contrato de la API (POST /api/v1/documentos) expone el id como
+    # cadena opaca, no como entero secuencial (evita enumerar documentos de otros).
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ciudadano_id: Mapped[int] = mapped_column(ForeignKey("ciudadano.id"), index=True)
     titulo: Mapped[str] = mapped_column(String(255))
     tipo: Mapped[str] = mapped_column(String(100))
@@ -158,7 +161,7 @@ class Autorizacion(Base):
     __tablename__ = "autorizacion"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    documento_id: Mapped[int] = mapped_column(ForeignKey("documento.id"), index=True)
+    documento_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documento.id"), index=True)
     tercero: Mapped[str] = mapped_column(String(255))
     otorgada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     vence_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

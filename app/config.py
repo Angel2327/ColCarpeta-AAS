@@ -48,6 +48,10 @@ class Config(BaseSettings):
     tamano_maximo_archivo_bytes: int = 20_971_520
     presigned_url_ttl_auth: int = 900
     presigned_url_ttl_transfer: int = 86_400
+    # No tiene variable propia en "Enlaces firmados" (esa tabla solo lista centralizador
+    # y operador destino): se agrega para /api/v1/documentos/{id}/descarga, corto porque
+    # el portal redirige de inmediato y el enlace no se reutiliza.
+    presigned_url_ttl_descarga: int = 300
     transfer_confirm_timeout: int = 14_400
     purge_delay_days: int = 30
     outbox_intervalo_segundos: int = 10

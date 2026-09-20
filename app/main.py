@@ -13,6 +13,7 @@ from app.errors import (
     manejar_error_de_validacion,
     manejar_error_no_previsto,
 )
+from app.documentos.router import router as documentos_router
 from app.identidad.perfil_totp import router as perfil_totp_router
 from app.identidad.registro import router as registro_router
 from app.identidad.sesion import router as sesion_router
@@ -64,3 +65,4 @@ app.include_router(registraduria_router)
 app.include_router(registro_router)
 app.include_router(sesion_router)
 app.include_router(perfil_totp_router)
+app.include_router(documentos_router)
