@@ -18,6 +18,14 @@ por esos metadatos hacia que dos documentos distintos con la misma descripcion s
 pisaran entre si y se perdiera el anterior del bucket sin que el ciudadano lo pidiera.
 Cuando si viene, se borra el anterior (objeto y fila) y la sustitucion misma queda
 registrada en auditoria, que es donde este modelo de datos conserva ese tipo de rastro.
+
+CU-11 (autenticacion ante GovCarpeta): `POST .../autenticacion` solo escribe en outbox y
+marca el documento PENDIENTE; el enlace firmado de 15 min, la llamada al centralizador y
+la actualizacion final del estado las hace `app.interoperabilidad.outbox` en segundo
+plano (ver ese modulo para E1-E5). A2 ("la solicitud la origina el registro y no el
+ciudadano") no tiene todavia un segundo llamador real -- CU-01 no encola la autenticacion
+del documento de identidad en esta entrega -- pero el propio proceso de outbox ya actua
+siempre como actor "sistema" al aplicar el resultado, sea quien sea quien encolo.
 """
 
 from __future__ import annotations
@@ -38,7 +46,7 @@ from app.documentos.almacenamiento import FalloAlmacenamiento, eliminar_objeto, 
 from app.documentos.tipos import TIPOS_PERMITIDOS, detectar_content_type
 from app.errors import ErrorDeNegocio
 from app.identidad.dependencias import ciudadano_actual
-from app.models import Auditoria, Ciudadano, Documento, EstadoAutenticacionDocumento, EstadoCiudadano
+from app.models import Auditoria, Ciudadano, Documento, EstadoAutenticacionDocumento, EstadoCiudadano, Outbox
 
 router = APIRouter(prefix="/api/v1/documentos", tags=["documentos"])
 
@@ -70,6 +78,15 @@ class RespuestaListaDocumentos(BaseModel):
 class RespuestaDescarga(BaseModel):
     url: str
     expira_en: datetime
+
+
+class RespuestaAutenticacion(BaseModel):
+    estado: EstadoAutenticacionDocumento
+    # El contrato documentado para el POST solo muestra {"estado": "PENDIENTE"}; estos
+    # dos campos son una extension aditiva (igual forma que el GET) para que A1 pueda
+    # "mostrar el resultado guardado" sin cambiar de forma segun el caso.
+    respuesta_centralizador: str | None
+    actualizado_en: datetime | None
 
 
 def _correlation_id(request: Request) -> str | None:
@@ -315,3 +332,68 @@ async def descargar_documento(
         await session.commit()
 
     return RespuestaDescarga(url=url, expira_en=expira_en)
+
+
+def _a_respuesta_autenticacion(d: Documento) -> RespuestaAutenticacion:
+    return RespuestaAutenticacion(
+        estado=d.estado_autenticacion,
+        respuesta_centralizador=d.respuesta_centralizador,
+        actualizado_en=d.autenticacion_actualizada_en,
+    )
+
+
+@router.post("/{documento_id}/autenticacion", status_code=202)
+async def solicitar_autenticacion(
+    documento_id: uuid.UUID, response: Response, request: Request, actual: Ciudadano = Depends(ciudadano_actual)
+) -> RespuestaAutenticacion:
+    async with SessionLocal() as session:
+        documento = await _obtener_propio(session, documento_id, actual.id)
+
+        # A1: ya autenticado, no se reenvia; se muestra el resultado guardado.
+        if documento.estado_autenticacion == EstadoAutenticacionDocumento.AUTENTICADO:
+            response.status_code = 200
+            return _a_respuesta_autenticacion(documento)
+
+        # Idempotencia (seccion "Reglas de operacion"): ya hay una solicitud en curso,
+        # no se duplica la entrada de outbox.
+        if documento.estado_autenticacion == EstadoAutenticacionDocumento.PENDIENTE:
+            response.status_code = 202
+            return _a_respuesta_autenticacion(documento)
+
+        documento.estado_autenticacion = EstadoAutenticacionDocumento.PENDIENTE
+        documento.autenticacion_actualizada_en = datetime.now(timezone.utc)
+
+        session.add(
+            Outbox(
+                operacion="authenticateDocument",
+                payload={
+                    "documento_id": str(documento.id),
+                    "cedula": actual.id,
+                    "titulo": documento.titulo,
+                    "correlation_id": _correlation_id(request),
+                },
+            )
+        )
+        session.add(
+            Auditoria(
+                actor=str(actual.id),
+                accion="documento.autenticacion_solicitada",
+                recurso=str(documento.id),
+                ciudadano_id=actual.id,
+                correlation_id=_correlation_id(request),
+                detalle={},
+            )
+        )
+        await session.commit()
+
+        response.status_code = 202
+        return _a_respuesta_autenticacion(documento)
+
+
+@router.get("/{documento_id}/autenticacion", response_model=RespuestaAutenticacion)
+async def consultar_autenticacion(
+    documento_id: uuid.UUID, actual: Ciudadano = Depends(ciudadano_actual)
+) -> RespuestaAutenticacion:
+    async with SessionLocal() as session:
+        documento = await _obtener_propio(session, documento_id, actual.id)
+        return _a_respuesta_autenticacion(documento)

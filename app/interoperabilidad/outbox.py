@@ -12,22 +12,34 @@ Parametros (seccion "Parametros y limites"):
 
 Se reintenta ante 500, 501, tiempo de espera agotado y error de red -- es decir, ante
 `CentralizadorNoDisponible`. Cualquier otro error (por ejemplo el 501 "ya registrado" de
-`registerCitizen`, que `GovCarpeta` traduce a `ValueError`) es de negocio y no se
-reintenta: la entrada pasa a FALLIDO de una vez.
+registerCitizen, o el 204 "no autenticado" de authenticateDocument, que `GovCarpeta`
+traduce a `ValueError`) es de negocio y no se reintenta: la entrada pasa a FALLIDO de
+una vez.
 """
 
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.interoperabilidad.govcarpeta import CentralizadorNoDisponible, GovCarpeta
-from app.models import Auditoria, Ciudadano, EstadoCiudadano, EstadoOutbox, Outbox
+from app.models import (
+    Auditoria,
+    Ciudadano,
+    Documento,
+    EstadoAutenticacionDocumento,
+    EstadoCiudadano,
+    EstadoOutbox,
+    Outbox,
+)
 
 logger = logging.getLogger("colcarpeta.outbox")
 
@@ -35,7 +47,17 @@ ESPERA_REINTENTOS_MINUTOS: tuple[int, ...] = (1, 2, 4, 8, 16)
 REINTENTOS_MAXIMOS = len(ESPERA_REINTENTOS_MINUTOS)
 TAMANO_LOTE = 20
 
-Manejador = Callable[[GovCarpeta, dict], Awaitable[None]]
+Manejador = Callable[[GovCarpeta, dict], Awaitable[Any]]
+
+
+class DocumentoEliminado(Exception):
+    """CU-11, E5: el documento se elimino entre la solicitud y el envio.
+
+    No hay un estado CANCELADO en `outbox.estado` (ni consola de administracion que lo
+    distinga de FALLIDO todavia), asi que se trata como un fallo de negocio: no se
+    reintenta, la entrada pasa a FALLIDO y el efecto de finalizacion no encuentra
+    documento que actualizar.
+    """
 
 
 async def _registrar_ciudadano(gov: GovCarpeta, payload: dict) -> None:
@@ -51,12 +73,43 @@ async def _desligar_ciudadano(gov: GovCarpeta, payload: dict) -> None:
     await gov.desligar_ciudadano(cedula=payload["cedula"])
 
 
-async def _autenticar_documento(gov: GovCarpeta, payload: dict) -> None:
-    await gov.autenticar_documento(
-        cedula=payload["cedula"],
-        url_documento=payload["url_documento"],
-        titulo=payload["titulo"],
-    )
+async def _autenticar_documento(gov: GovCarpeta, payload: dict) -> str:
+    # Import diferido: evita el ciclo interoperabilidad <-> documentos (este ultimo ya
+    # importa cosas de identidad/interoperabilidad indirectamente via el resto de la app).
+    from app.config import get_config
+    from app.db import SessionLocal
+    from app.documentos.almacenamiento import generar_url_descarga
+
+    documento_id = uuid.UUID(payload["documento_id"])
+    async with SessionLocal() as session:
+        documento = await session.get(Documento, documento_id)
+        if documento is None:
+            raise DocumentoEliminado(f"el documento {documento_id} ya no existe")
+        s3_key = documento.s3_key
+        ciudadano_id = documento.ciudadano_id
+
+    # E4: el enlace se genera de nuevo en cada intento (incluidos los reintentos), asi
+    # que siempre esta fresco en el momento exacto de la llamada al centralizador --
+    # nunca puede vencer "antes de la descarga" porque no se reutiliza uno viejo.
+    cfg = get_config()
+    url = generar_url_descarga(clave=s3_key, ttl_segundos=cfg.presigned_url_ttl_auth)
+
+    async with SessionLocal() as session:
+        # "Cada generacion de un enlace firmado se registra en auditoria con el
+        # documento, el destino y el momento" (Seguridad y manejo de documentos).
+        session.add(
+            Auditoria(
+                actor="sistema",
+                accion="documento.enlace_generado",
+                recurso=payload["documento_id"],
+                ciudadano_id=ciudadano_id,
+                correlation_id=payload.get("correlation_id"),
+                detalle={"destino": "centralizador"},
+            )
+        )
+        await session.commit()
+
+    return await gov.autenticar_documento(cedula=payload["cedula"], url_documento=url, titulo=payload["titulo"])
 
 
 MANEJADORES: dict[str, Manejador] = {
@@ -66,17 +119,57 @@ MANEJADORES: dict[str, Manejador] = {
 }
 
 
-async def _activar_ciudadano(session: AsyncSession, payload: dict) -> None:
-    """CU-01, paso 7: con 201 de registerCitizen el ciudadano pasa de PENDIENTE_CENTRALIZADOR a ACTIVO."""
+class ResultadoOperacion(str, enum.Enum):
+    EXITO = "EXITO"
+    RECHAZO = "RECHAZO"  # fallo de negocio, no reintentable (p. ej. 204, 501 ya registrado)
+    REINTENTOS_AGOTADOS = "REINTENTOS_AGOTADOS"  # fallo transitorio, se acabaron los intentos
+
+
+async def _activar_ciudadano(
+    session: AsyncSession, payload: dict, resultado: ResultadoOperacion, respuesta: Any, error: str | None
+) -> None:
+    """CU-01, paso 7: con 201 de registerCitizen el ciudadano pasa de PENDIENTE_CENTRALIZADOR a ACTIVO.
+
+    En fallo (RECHAZO o REINTENTOS_AGOTADOS) no se hace nada: E5/E6 de CU-01 dicen
+    explicitamente que el ciudadano permanece en PENDIENTE_CENTRALIZADOR.
+    """
+    if resultado != ResultadoOperacion.EXITO:
+        return
     ciudadano = await session.get(Ciudadano, payload["cedula"])
     if ciudadano is not None and ciudadano.estado == EstadoCiudadano.PENDIENTE_CENTRALIZADOR:
         ciudadano.estado = EstadoCiudadano.ACTIVO
 
 
-EfectoAlCompletar = Callable[[AsyncSession, dict], Awaitable[None]]
+async def _actualizar_autenticacion_documento(
+    session: AsyncSession, payload: dict, resultado: ResultadoOperacion, respuesta: Any, error: str | None
+) -> None:
+    """CU-11, paso 5 y E1/E3: aplica el resultado de authenticateDocument al documento.
 
-EFECTOS_AL_COMPLETAR: dict[str, EfectoAlCompletar] = {
+    - EXITO (200): AUTENTICADO, con la respuesta del centralizador guardada.
+    - RECHAZO (204, o el documento se elimino -- E5): RECHAZADO, salvo que ya no exista.
+    - REINTENTOS_AGOTADOS (E3): se queda en PENDIENTE, sin tocar nada mas.
+    """
+    if resultado == ResultadoOperacion.REINTENTOS_AGOTADOS:
+        return
+
+    documento = await session.get(Documento, uuid.UUID(payload["documento_id"]))
+    if documento is None:
+        return  # E5: ya no hay nada que actualizar
+
+    if resultado == ResultadoOperacion.EXITO:
+        documento.estado_autenticacion = EstadoAutenticacionDocumento.AUTENTICADO
+        documento.respuesta_centralizador = str(respuesta) if respuesta is not None else None
+    else:  # RECHAZO
+        documento.estado_autenticacion = EstadoAutenticacionDocumento.RECHAZADO
+        documento.respuesta_centralizador = error
+    documento.autenticacion_actualizada_en = datetime.now(timezone.utc)
+
+
+EfectoAlFinalizar = Callable[[AsyncSession, dict, ResultadoOperacion, Any, str | None], Awaitable[None]]
+
+EFECTOS_AL_FINALIZAR: dict[str, EfectoAlFinalizar] = {
     "registerCitizen": _activar_ciudadano,
+    "authenticateDocument": _actualizar_autenticacion_documento,
 }
 
 
@@ -102,22 +195,25 @@ async def _reclamar_uno(session: AsyncSession) -> Outbox | None:
 
 
 def _identificador_recurso(payload: dict) -> str | None:
-    valor = payload.get("cedula")
+    valor = payload.get("documento_id") or payload.get("cedula")
     return str(valor) if valor is not None else None
 
 
-async def _ejecutar(gov: GovCarpeta, operacion: str, payload: dict) -> tuple[str | None, bool]:
-    """Ejecuta la operacion. Devuelve (error, reintentable); error=None si tuvo exito."""
+async def _ejecutar(gov: GovCarpeta, operacion: str, payload: dict) -> tuple[Any, str | None, bool]:
+    """Ejecuta la operacion. Devuelve (respuesta, error, reintentable).
+
+    Exactamente uno de (respuesta, error) es distinto de None.
+    """
     manejador = MANEJADORES.get(operacion)
     if manejador is None:
-        return f"operacion desconocida: {operacion}", False
+        return None, f"operacion desconocida: {operacion}", False
     try:
-        await manejador(gov, payload)
+        respuesta = await manejador(gov, payload)
     except CentralizadorNoDisponible as exc:
-        return str(exc)[:2000], True
-    except Exception as exc:  # error de negocio (p. ej. ya registrado): no se reintenta
-        return str(exc)[:2000], False
-    return None, False
+        return None, str(exc)[:2000], True
+    except Exception as exc:  # error de negocio (p. ej. ya registrado, documento eliminado): no se reintenta
+        return None, str(exc)[:2000], False
+    return respuesta, None, False
 
 
 def _finalizar(entrada: Outbox, intentos_previos: int, error: str | None, reintentable: bool) -> None:
@@ -134,6 +230,15 @@ def _finalizar(entrada: Outbox, intentos_previos: int, error: str | None, reinte
         entrada.proximo_intento = datetime.now(timezone.utc) + espera
     else:
         entrada.estado = EstadoOutbox.FALLIDO
+
+
+def _resultado_final(entrada: Outbox, reintentable: bool) -> ResultadoOperacion | None:
+    """None mientras la entrada sigue PENDIENTE (se reintentara mas tarde)."""
+    if entrada.estado == EstadoOutbox.COMPLETADO:
+        return ResultadoOperacion.EXITO
+    if entrada.estado == EstadoOutbox.FALLIDO:
+        return ResultadoOperacion.REINTENTOS_AGOTADOS if reintentable else ResultadoOperacion.RECHAZO
+    return None
 
 
 async def procesar_lote(
@@ -156,17 +261,18 @@ async def procesar_lote(
             payload = dict(entrada.payload)
             intentos_previos = entrada.intentos
 
-        error, reintentable = await _ejecutar(gov, operacion, payload)
+        respuesta, error, reintentable = await _ejecutar(gov, operacion, payload)
 
         async with session_factory() as session, session.begin():
             entrada = await session.get(Outbox, entrada_id, with_for_update=True)
             assert entrada is not None
             _finalizar(entrada, intentos_previos, error, reintentable)
-            if entrada.estado == EstadoOutbox.COMPLETADO:
-                efecto = EFECTOS_AL_COMPLETAR.get(operacion)
+
+            resultado = _resultado_final(entrada, reintentable)
+            if resultado is not None:
+                efecto = EFECTOS_AL_FINALIZAR.get(operacion)
                 if efecto is not None:
-                    await efecto(session, payload)
-            if entrada.estado in (EstadoOutbox.COMPLETADO, EstadoOutbox.FALLIDO):
+                    await efecto(session, payload, resultado, respuesta, error)
                 session.add(
                     Auditoria(
                         actor="sistema",
@@ -177,6 +283,7 @@ async def procesar_lote(
                         detalle={
                             "outbox_id": entrada_id,
                             "estado": entrada.estado.value,
+                            "resultado": resultado.value,
                             "intentos": entrada.intentos,
                             "error": error,
                         },

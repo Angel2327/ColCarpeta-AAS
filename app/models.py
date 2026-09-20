@@ -81,7 +81,11 @@ class Ciudadano(Base):
 
     documentos: Mapped[list["Documento"]] = relationship(back_populates="ciudadano")
     transferencias: Mapped[list["Transferencia"]] = relationship(back_populates="ciudadano")
-    auditorias: Mapped[list["Auditoria"]] = relationship(back_populates="ciudadano")
+    # passive_deletes=True: sin esto, al borrar un ciudadano SQLAlchemy nulifica
+    # ciudadano_id en cada Auditoria con un UPDATE de ORM antes del DELETE, y el listener
+    # de solo-insercion de Auditoria lo rechaza. Con passive_deletes=True el ORM no toca
+    # esas filas: deja que Postgres aplique el ON DELETE SET NULL de la propia FK.
+    auditorias: Mapped[list["Auditoria"]] = relationship(back_populates="ciudadano", passive_deletes=True)
 
 
 class Documento(Base):
@@ -104,6 +108,11 @@ class Documento(Base):
         PgEnum(EstadoAutenticacionDocumento, name="estado_autenticacion_documento"),
         default=EstadoAutenticacionDocumento.NO_SOLICITADA,
     )
+    # No estaban en la tabla de "Modelo de datos", pero CU-11 y el contrato de
+    # GET .../autenticacion los necesitan: la respuesta cruda del centralizador y cuando
+    # cambio estado_autenticacion por ultima vez.
+    respuesta_centralizador: Mapped[str | None] = mapped_column(Text)
+    autenticacion_actualizada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     firma_valida: Mapped[bool | None] = mapped_column(Boolean)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

@@ -28,24 +28,26 @@ Usa `alembic revision --autogenerate` y valida contra la base real: hay Postgres
 migraciones aplicadas · `app/interoperabilidad/` (cliente del centralizador y bandeja
 de salida) · `app/mock/registraduria.py` · `app/identidad/` (registro, correo,
 seguridad, sesión, token, TOTP, dependencias) · `app/documentos/` (almacenamiento S3,
-detección de tipo, rutas).
+detección de tipo, rutas, autenticación) · `scripts/limpiar_prueba.py`.
 
-**CU-01, registro del ciudadano**: implementado, con A1, A2 y E1 a E6. Probado de punta
-a punta contra el centralizador real.
+**Los cuatro flujos obligatorios de la entrega están implementados y probados de punta
+a punta contra el sistema real del MinTIC.**
 
-**CU-02, inicio de sesión**: implementado, con A1, A2 y E1 a E4. JWT RS256, segundo
-factor en modo `simulado`, bloqueo por intentos derivado de `auditoria`.
-`DELETE /api/v1/sesion` no revoca el token: vence solo a los 30 minutos.
-
-**CU-05, carga de documentos**: implementado, con A2 y E1 a E5. La sustitución es
-explícita, por el campo `sustituye_a`.
+- **CU-01, registro del ciudadano**: A1, A2 y E1 a E6. El ciudadano queda afiliado a
+  ColCarpeta en `validateCitizen`.
+- **CU-02, inicio de sesión**: A1, A2 y E1 a E4. JWT RS256, segundo factor en modo
+  `simulado`, bloqueo por intentos derivado de `auditoria`. `DELETE /api/v1/sesion` no
+  revoca el token: vence solo a los 30 minutos.
+- **CU-05, carga de documentos**: A2 y E1 a E5. La sustitución es explícita, por el
+  campo `sustituye_a`.
+- **CU-11, autenticación ante GovCarpeta**: A1, A2 y E1 a E5. El centralizador descarga
+  el documento del bucket por el enlace firmado y responde 200.
 
 ### Pendiente
 
-1. **CU-11** autenticación ante GovCarpeta — último flujo obligatorio.
-2. **CU-09, validación de firma digital** (A1 de CU-05): sin implementar.
-   `documento.firma_valida` queda siempre en nulo para lo que sube el ciudadano.
-   Requiere `pyHanko` para validar firmas PAdES dentro del PDF.
+**CU-09, validación de firma digital** (A1 de CU-05): sin implementar.
+`documento.firma_valida` queda siempre en nulo para lo que sube el ciudadano.
+Requiere `pyHanko` para validar firmas PAdES dentro del PDF.
 
 Fuera de alcance por ahora: transferencia entre operadores (diseñada, sin implementar),
 notificaciones más allá del correo de registro, consola de administración.
@@ -132,6 +134,10 @@ Estas no están en la documentación del MinTIC y rompen el sistema en silencio:
   Para probar, usar `validateCitizen` y `getOperators`, que son de solo lectura.
 - **No exponer objetos del bucket de forma pública.** El único acceso de terceros es un
   enlace firmado con vigencia.
+- **No matar procesos que no hayas iniciado tú en esta sesión.** El puerto 8000
+  normalmente tiene el servidor de desarrollo del usuario corriendo con `--reload`.
+  Si necesitas un servidor para probar, levanta uno en un puerto propio y apágalo
+  al terminar.
 
 ## Decisiones cerradas — no reabrir
 
