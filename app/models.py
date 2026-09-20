@@ -46,6 +46,11 @@ class EstadoTransferencia(str, enum.Enum):
     FALLIDA = "FALLIDA"
 
 
+class EstadoTotp(str, enum.Enum):
+    PENDIENTE = "PENDIENTE"
+    HABILITADO = "HABILITADO"
+
+
 class Ciudadano(Base):
     __tablename__ = "ciudadano"
 
@@ -58,7 +63,14 @@ class Ciudadano(Base):
     email_personal: Mapped[str] = mapped_column(String(255))
     telefono: Mapped[str] = mapped_column(String(30))
     password_hash: Mapped[str] = mapped_column(String(255))
+    # totp_secret + totp_estado siguen el enrolamiento (docs/especificacion.md, "Segundo
+    # factor"): NULL/sin totp_estado = nunca enrolado. totp_secret_actualizado_en fija el
+    # vencimiento de 15 min de un secreto PENDIENTE. totp_ultimo_paso evita reusar un
+    # codigo dentro de su periodo (solo aplica en modo TOTP_MODO=real).
     totp_secret: Mapped[str | None] = mapped_column(String(64))
+    totp_estado: Mapped[EstadoTotp | None] = mapped_column(PgEnum(EstadoTotp, name="estado_totp"))
+    totp_secret_actualizado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    totp_ultimo_paso: Mapped[int | None] = mapped_column(BigInteger)
     estado: Mapped[EstadoCiudadano] = mapped_column(
         PgEnum(EstadoCiudadano, name="estado_ciudadano"),
         default=EstadoCiudadano.PENDIENTE_VERIFICACION,

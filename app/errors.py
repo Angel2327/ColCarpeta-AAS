@@ -17,6 +17,7 @@ logger = logging.getLogger("colcarpeta.errores")
 CODIGOS: dict[str, int] = {
     "VALIDACION_FALLIDA": 422,
     "CREDENCIALES_INVALIDAS": 401,
+    "NO_AUTENTICADO": 401,
     "SEGUNDO_FACTOR_REQUERIDO": 428,
     "SEGUNDO_FACTOR_INVALIDO": 401,
     "CUENTA_BLOQUEADA": 423,

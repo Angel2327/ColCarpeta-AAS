@@ -30,12 +30,12 @@ centralizador) · `app/interoperabilidad/outbox.py` (proceso de bandeja de salid
 `app/mock/registraduria.py` · `app/identidad/` (registro, correo, seguridad).
 
 **CU-01, registro del ciudadano**: implementado, con los flujos A1, A2 y E1 a E6.
+**CU-02, inicio de sesión**: implementado, con A1, A2 y E1 a E4.
 
-### Pendiente — 3 de los 4 flujos obligatorios de la entrega
+### Pendiente — 2 de los 4 flujos obligatorios de la entrega
 
-1. **CU-02** inicio de sesión
-2. **CU-05** carga de documentos
-3. **CU-11** autenticación ante GovCarpeta
+1. **CU-05** carga de documentos
+2. **CU-11** autenticación ante GovCarpeta
 
 Fuera de alcance por ahora: transferencia entre operadores (diseñada, sin implementar),
 notificaciones más allá del correo de registro, consola de administración.

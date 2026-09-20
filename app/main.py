@@ -13,7 +13,9 @@ from app.errors import (
     manejar_error_de_validacion,
     manejar_error_no_previsto,
 )
+from app.identidad.perfil_totp import router as perfil_totp_router
 from app.identidad.registro import router as registro_router
+from app.identidad.sesion import router as sesion_router
 from app.interoperabilidad.outbox import ejecutar_bandeja_de_salida
 from app.mock.registraduria import router as registraduria_router
 
@@ -60,3 +62,5 @@ async def health():
 
 app.include_router(registraduria_router)
 app.include_router(registro_router)
+app.include_router(sesion_router)
+app.include_router(perfil_totp_router)
