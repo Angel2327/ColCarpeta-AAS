@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 import uuid
 from contextlib import asynccontextmanager
 
@@ -7,6 +8,15 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 
 from app.config import get_config
+
+# Sin esto, un logger propio (p. ej. "colcarpeta.notificaciones", usado para dejar
+# constancia demostrable del correo simulado de primer acceso) nunca imprime nada por
+# debajo de WARNING: sin handlers configurados en ningun punto de la jerarquia, Python
+# solo aplica su manejador de ultimo recurso, que filtra en WARNING. El nivel global
+# se deja en WARNING (no cambia el comportamiento ya visto de uvicorn ni de librerias
+# de terceros) y solo la jerarquia propia ("colcarpeta.*") baja a INFO.
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("colcarpeta").setLevel(logging.INFO)
 from app.errors import (
     ErrorDeNegocio,
     manejar_error_de_negocio,
@@ -15,6 +25,7 @@ from app.errors import (
 )
 from app.documentos.router import router as documentos_router
 from app.identidad.perfil_totp import router as perfil_totp_router
+from app.identidad.primer_acceso import router as primer_acceso_router
 from app.identidad.registro import router as registro_router
 from app.identidad.sesion import router as sesion_router
 from app.interoperabilidad.outbox import ejecutar_bandeja_de_salida
@@ -78,6 +89,7 @@ async def health():
 
 app.include_router(registraduria_router)
 app.include_router(registro_router)
+app.include_router(primer_acceso_router)
 app.include_router(sesion_router)
 app.include_router(perfil_totp_router)
 app.include_router(documentos_router)

@@ -149,6 +149,70 @@ nombrar al destino: se queda `ENVIADA`, no se resuelve sola, y queda auditado co
      identidades distintas, no la misma persona regresando) y no tiene una resolución
      tan directa (no hay un registro "propio" que reemplazar).
 
+**Primer acceso: establecimiento de contraseña para un ciudadano recibido por
+transferencia, implementado y probado de punta a punta el 2026-09-22.** Ese ciudadano
+llega sin `password_hash` y no podía iniciar sesión hasta ahora. Al completar la
+recepción con éxito, si trajo `contactEmail` (`email_personal`),
+`_emitir_token_primer_acceso` (`app/interoperabilidad/outbox.py`) genera un token de un
+solo uso (`app/identidad/token_acceso.py`: aleatorio de 256 bits, hasheado con SHA-256
+-- determinista a propósito, para poder buscarlo por igualdad; a diferencia de una
+contraseña no hace falta un hash costoso porque el valor ya tiene entropía alta) y lo
+"envía" por `app/notificaciones/correo.py`. Si no trajo `contactEmail`, no se inventa un
+canal alterno: el ciudadano queda con `password_hash` en NULL (pendiente de primer
+acceso) y una auditoría `primer_acceso.sin_canal` explica por qué.
+
+`POST /api/v1/primer-acceso` (nueva, sin sesión -- el ciudadano todavía no puede
+autenticarse) recibe `{token, password}`, exige las mismas reglas de contraseña que el
+registro (compartidas ahora en `app/identidad/seguridad.py`, antes solo en
+`registro.py`), y responde siempre el mismo `400 TOKEN_INVALIDO` sin distinguir "no
+existe", "ya se usó" o "venció" -- nunca revela si el token corresponde a una cédula
+real. Las tres auditorías pedidas están cubiertas con acciones propias:
+`primer_acceso.token_emitido`, `primer_acceso.token_usado`,
+`primer_acceso.token_vencido` (más `primer_acceso.token_invalido` para un token que
+nunca existió o que ya se consumió antes). El token en claro nunca se persiste en
+ningún lado, ni siquiera en el detalle de la auditoría.
+
+**No existía ningún mecanismo de notificación en el proyecto antes de esto** --ni
+siquiera el "correo de registro" que el estado de la implementación daba por hecho
+(`docs/especificacion.md`, paso 9 de "Registro del ciudadano"): `app/identidad/correo.py`
+solo generaba la dirección `email_carpeta`, nunca enviaba nada. `app/notificaciones/`
+es hoy el único lugar que "envía" algo, y lo hace simulado (sin proveedor real
+integrado, igual que la Registraduría o `TOTP_MODO=simulado`): se registra con
+`logger.info` para poder demostrarlo. Esto exigió un arreglo aparte: el proyecto nunca
+había llamado a `logging.basicConfig`, así que ese `logger.info` no aparecía en ningún
+lado (sin handlers configurados, Python solo aplica su manejador de último recurso, que
+filtra en WARNING). `app/main.py` ahora configura el nivel global en WARNING y sube
+`"colcarpeta"` (el prefijo de todos los logueadores propios) a INFO.
+
+**Correo de registro (CU-01, paso 9) conectado, y reenvío del token de primer acceso
+implementado, ambos probados de punta a punta el 2026-09-22.** El correo de registro
+faltaba por completo (ver el hallazgo de la pasada anterior) aunque `registro.py` no lo
+mencionaba: quedó pendiente sin decirlo. Ahora `_activar_ciudadano`
+(`app/interoperabilidad/outbox.py`) envía la notificación al pasar a `ACTIVO`, pero
+**solo** para un registro real -- `registro.py` marca el payload con
+`notificar_registro: True` al encolar `registerCitizen`, porque ese mismo manejador
+también reactiva a un ciudadano recuperado tras un envío o una recepción fallidos
+(CU-03/CU-16), y ahí no correspondería un correo de "bienvenida". Auditado como
+`registro.notificacion_enviada`.
+
+`POST /api/v1/primer-acceso/reenviar` (nueva, pública, sin sesión) resuelve al
+ciudadano por cédula o `email_carpeta` (comparte `resolver_usuario`, ahora en
+`app/identidad/dependencias.py`, con el login) y responde **siempre el mismo mensaje
+fijo**, exista o no la carpeta y esté o no pendiente de primer acceso. Si de verdad
+está pendiente y tiene `email_personal`, genera un token nuevo (sobrescribe la fila:
+el anterior queda inservible de inmediato, sin borrado aparte) y lo envía; si no está
+pendiente, si no existe, o si no tiene `email_personal`, no hace nada -- en los tres
+casos, la misma respuesta. Limitado por `PRIMER_ACCESO_REENVIO_MAXIMO` (3 por defecto)
+dentro de `PRIMER_ACCESO_REENVIO_VENTANA_MINUTOS` (15), por cédula y por origen, igual
+patrón que el bloqueo de inicio de sesión (derivado de `auditoria`, sin tabla propia) --
+las solicitudes ignoradas y limitadas también cuentan para el límite por origen, para
+que enumerar cédulas al azar no lo esquive. Tres acciones de auditoría cubren "atendidas,
+ignoradas y limitadas": `primer_acceso.reenvio_atendido`, `.reenvio_ignorado`,
+`.reenvio_limitado`. Probado de punta a punta con
+`scripts/probar_reenvio_primer_acceso.py` (token vencido → reenvío → token viejo sigue
+sin servir → token nuevo funciona → login) más verificación manual de las ramas
+ignorada (ciudadano ya activo, cédula inexistente) y limitada.
+
 `TRANSFERENCIA_EXIGIR_HTTPS` (nueva variable, `true` por defecto): CU-03 rechaza un
 destino cuyo `transferAPIURL` no sea `https://`. Se puede apagar solo para pruebas
 locales entre instancias propias sin TLS (`docker-compose.test.yml`) — **nunca en
@@ -208,7 +272,8 @@ y estado de su carpeta") **no existe todavía**: no lo pidió esta entrega, pero
 que hoy no hay forma de consultar el estado de la carpeta por API — las pruebas de CU-03
 verifican el estado consultando la base de datos directamente.
 
-Notificaciones más allá del correo de registro, consola de administración.
+Notificaciones más allá del correo de registro y el de primer acceso (ver arriba),
+consola de administración.
 
 No registrar `registerTransferEndPoint` todavía: ver "Prohibido".
 
@@ -229,24 +294,33 @@ PostgreSQL y almacenamiento S3 en Supabase · despliegue en Railway.
 
 ```
 app/
-  main.py                      arranque, middleware de correlación, ciclo de vida
+  main.py                      arranque, middleware de correlación, config de logging, ciclo de vida
   config.py  db.py  errors.py  configuración, sesión de BD, sobre de errores
   models.py                    las 7 tablas
+  identidad/
+    seguridad.py               hash de contraseñas (Argon2id) + regla de formato compartida
+    token.py                   JWT de sesión (RS256)
+    token_acceso.py            token de un solo uso para primer acceso (SHA-256)
+    dependencias.py            auth de sesión + resolver_usuario (cedula o email_carpeta)
+    primer_acceso.py           POST /api/v1/primer-acceso y /primer-acceso/reenviar
+  notificaciones/correo.py     envío de correo simulado (sin proveedor real integrado)
   interoperabilidad/
     govcarpeta.py              ÚNICO cliente del centralizador
     operadores.py              cliente de otros operadores (descarga, confirmAPI, envío)
     outbox.py                  bandeja de salida + mantenimiento periódico (directorio,
-                                reconciliación, purga)
+                                reconciliación, purga) + emisión del token de primer acceso
     transferencias.py          router (/api, CU-16) + router_propio (/api/v1/perfil, CU-03)
   mock/registraduria.py        Registraduría simulada
 alembic/versions/              migraciones
 docs/especificacion.md         la especificación completa
 scripts/probar_govcarpeta.py   prueba de humo contra la API real
-scripts/limpiar_prueba.py      borra toda huella local y en el centralizador de una cedula
+scripts/limpiar_prueba.py      borra huella real de una cedula; pide confirmarla escribiendola de nuevo
 scripts/probar_transferencia.py  simula un operador de origen enviando CU-16 a esta app
 scripts/probar_envio_transferencia.py  CU-03+CU-16 entre dos instancias propias (ver mas abajo)
 scripts/probar_reconciliacion.py  _reconciliar_transferencias en aislamiento, sin esperar horas
 scripts/probar_regreso_antes_de_purga.py  el mismo ciudadano vuelve antes de su propia purga
+scripts/probar_primer_acceso.py  consume el token de primer acceso y confirma el login
+scripts/probar_reenvio_primer_acceso.py  token vencido -> reenvio -> token viejo sin servir
 scripts/mock_centralizador.py  centralizador falso en memoria, solo para esas pruebas
 Dockerfile                     imagen de la app; la usa Railway Y docker-compose.test.yml
 docker-compose.test.yml        solo para probar en Linux en esta maquina (Docker Desktop),
@@ -403,6 +477,10 @@ docker compose -f docker-compose.test.yml up -d app-a app-b   # corren "alembic 
 docker compose -f docker-compose.test.yml run --rm prueba-envio             # CU-03 + CU-16 normal
 docker compose -f docker-compose.test.yml run --rm prueba-reconciliacion   # sin esperar horas
 docker compose -f docker-compose.test.yml run --rm prueba-regreso          # el mismo ciudadano vuelve
+docker compose -f docker-compose.test.yml logs app-b | grep -A5 "correo simulado"   # token de primer acceso
+docker compose -f docker-compose.test.yml run --rm prueba-primer-acceso \
+  --base-url=http://app-b:8000 --token=<el-extraido-arriba> --usuario=<cedula>
+docker compose -f docker-compose.test.yml run --rm prueba-reenvio-primer-acceso   # token vencido + reenvio
 docker compose -f docker-compose.test.yml down -v             # -v: tambien borra postgres-a/b
 ```
 
@@ -426,7 +504,24 @@ entrante con la misma cédula y el mismo `email_carpeta`, contra `app-a` viva. V
 que el registro viejo (fila y objeto S3) se reemplaza y que el ciudadano llega a
 `ACTIVO` en vez de quedarse colgado en `TRASLADADO`.
 
-Estas tres pruebas, en conjunto, encontraron y corrigieron los bugs reales descritos
+`scripts/probar_primer_acceso.py` consume el token de primer acceso del ciudadano que
+`prueba-envio` acaba de dejar en `app-b` (extraído del log, no de la base: el token en
+claro no se guarda en ningún lado), establece la contraseña, confirma que reusar el
+mismo token ya falla, e inicia sesión con la contraseña nueva. Probado de punta a punta
+el 2026-09-22, incluyendo por separado (con filas sembradas a mano) el camino de token
+vencido y el de una transferencia sin `contactEmail`.
+
+`scripts/probar_reenvio_primer_acceso.py` siembra un ciudadano pendiente de primer
+acceso con un token YA vencido, confirma que no sirve, pide el reenvío, y confirma que
+el token viejo _sigue_ sin servir después. Es la primera mitad de la prueba completa:
+el token nuevo se extrae del log igual que arriba y se pasa a
+`scripts/probar_primer_acceso.py` para terminar el ciclo (establecer la contraseña con
+el token nuevo e iniciar sesión). Probado de punta a punta el 2026-09-22, más
+verificación manual (llamadas directas dentro del contenedor) de las ramas no
+cubiertas por el script: reenvío ignorado (ciudadano ya activo, cédula inexistente) y
+reenvío limitado por exceder `PRIMER_ACCESO_REENVIO_MAXIMO` en la ventana.
+
+Estas seis pruebas, en conjunto, encontraron y corrigieron los bugs reales descritos
 arriba en "Estado actual".
 
 ## Convenciones
@@ -446,3 +541,49 @@ arriba en "Estado actual".
   este `CLAUDE.md` ni justificaciones de diseño: eso va en comentarios dentro de
   la función. Al crear o modificar una ruta, revisa que su docstring siga
   cumpliendo esto.
+
+## Cómo reportar al terminar una tarea
+
+El resumen final es lo único que el usuario ve del trabajo. Se escribe **en
+español**, en lenguaje llano, y con esta estructura fija:
+
+**Antes de reportar, revisa tu propio diff buscando borrados no pedidos.** Que
+la aplicación arranque solo prueba que no falta nada de lo que corre al inicio;
+una función auxiliar o una validación dentro de una rama poco frecuente puede
+desaparecer sin que nada falle hasta mucho después. Cada línea eliminada debe
+corresponder a algo que la tarea pedía cambiar.
+
+**1. Qué quedó hecho.** Una línea por cada cosa que se pidió, en el mismo orden
+en que se pidió, marcada como hecha, parcial o no hecha. Ninguna de las cosas
+pedidas puede faltar en esta lista, ni siquiera las que parecen menores: si no
+se hizo, se dice que no se hizo.
+
+**2. Qué no se hizo y por qué.** Incluye lo que quedó fuera de alcance a
+propósito y lo que se intentó y no salió.
+
+**3. Decisiones tomadas que no estaban en la instrucción.** Cualquier criterio
+que se eligió sin que nadie lo pidiera, con la razón en una línea.
+
+**4. Qué se probó de verdad.** Distingue con claridad tres cosas distintas: lo
+que se ejecutó y funcionó, lo que se verificó leyendo el código sin ejecutarlo,
+y lo que no se probó. Nunca presentar lo segundo o lo tercero como lo primero.
+Si una prueba falló, se dice, aunque después se haya corregido.
+
+**5. Qué se tocó de lo real.** Base de datos de producción, bucket real,
+directorio del MinTIC, archivos dejados atrás. Si no se tocó nada real, decirlo
+explícitamente.
+
+**Antes de reportar, revisa tu propio diff buscando borrados no pedidos.** Que
+la aplicación arranque solo prueba que no falta nada de lo que corre al inicio;
+una función auxiliar o una validación dentro de una rama poco frecuente puede
+desaparecer sin que nada falle hasta mucho después. Cada línea eliminada debe
+
+**6. Comandos que debe ejecutar el usuario.** Siempre explícito, aunque sean
+cero: decir "no hay nada que ejecutar" en vez de omitir la sección. Si una
+migración ya se aplicó, decirlo, para que no la corra dos veces.
+
+**7. Nombre de commit propuesto**, con cuerpo cuando el cambio lo amerite.
+
+No escribas "listo" sobre algo que no ejecutaste. No describas como implementado
+lo que quedó a medias. Si durante la tarea descubriste que algo que el proyecto
+daba por hecho no era cierto, dilo aunque nadie lo haya preguntado.

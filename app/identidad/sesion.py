@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_config
 from app.db import SessionLocal
 from app.errors import ErrorDeNegocio
-from app.identidad.dependencias import ciudadano_actual
+from app.identidad.dependencias import ciudadano_actual, resolver_usuario
 from app.identidad.seguridad import verificar_password
 from app.identidad.token import emitir_token
 from app.identidad.totp import verificar_codigo
@@ -60,14 +60,6 @@ def _origen(request: Request) -> str:
 
 def _correlation_id(request: Request) -> str | None:
     return getattr(request.state, "correlation_id", None)
-
-
-async def _resolver_usuario(session: AsyncSession, usuario: str) -> Ciudadano | None:
-    usuario = usuario.strip()
-    if usuario.isdigit():
-        return await session.get(Ciudadano, int(usuario))
-    resultado = await session.execute(select(Ciudadano).where(Ciudadano.email_carpeta == usuario.lower()))
-    return resultado.scalar_one_or_none()
 
 
 async def _intentos_fallidos(
@@ -130,7 +122,7 @@ async def iniciar_sesion(solicitud: SolicitudSesion, request: Request) -> Respue
     correlation_id = _correlation_id(request)
 
     async with SessionLocal() as session:
-        ciudadano = await _resolver_usuario(session, solicitud.usuario)
+        ciudadano = await resolver_usuario(session, solicitud.usuario)
         cedula = ciudadano.id if ciudadano is not None else None
 
         # --- E3: bloqueo por intentos fallidos, por cedula y por origen -------------

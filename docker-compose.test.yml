@@ -155,6 +155,40 @@ services:
       - OPERATOR_NAME=Operador A (prueba)
     entrypoint: ["python", "scripts/probar_reconciliacion.py"]
 
+  # scripts/probar_primer_acceso.py: consume el token de primer acceso de un ciudadano
+  # ya recibido por transferencia en app-b (lo emite _emitir_token_primer_acceso al
+  # completarse la recepcion) y confirma que puede iniciar sesion despues. El token en
+  # claro nunca esta en la base -- se extrae del log de app-b ("correo simulado", ver
+  # app/notificaciones/correo.py) y se pasa por linea de comandos:
+  #   docker compose -f docker-compose.test.yml logs app-b | grep -A3 "correo simulado"
+  #   docker compose -f docker-compose.test.yml run --rm prueba-primer-acceso \
+  #     --base-url=http://app-b:8000 --token=<extraido> --usuario=<cedula>
+  prueba-primer-acceso:
+    build: .
+    depends_on:
+      - app-b
+    entrypoint: ["python", "scripts/probar_primer_acceso.py"]
+
+  # scripts/probar_reenvio_primer_acceso.py: siembra un ciudadano pendiente de primer
+  # acceso con un token YA vencido directo en postgres-b, y prueba el reenvio contra
+  # app-b viva. Necesita DATABASE_URL (a diferencia de prueba-primer-acceso, que solo
+  # es cliente HTTP) para poder sembrar el estado inicial.
+  #   docker compose -f docker-compose.test.yml run --rm prueba-reenvio-primer-acceso
+  #   docker compose -f docker-compose.test.yml logs app-b | grep -A3 "correo simulado"
+  #   docker compose -f docker-compose.test.yml run --rm prueba-primer-acceso \
+  #     --base-url=http://app-b:8000 --token=<el nuevo, extraido arriba> --usuario=900400801
+  prueba-reenvio-primer-acceso:
+    build: .
+    depends_on:
+      - app-b
+    volumes:
+      - ./.env:/app/.env:ro
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-b:5432/colcarpeta_b
+    entrypoint: ["python", "scripts/probar_reenvio_primer_acceso.py"]
+    command:
+      - --base-url=http://app-b:8000
+
   # scripts/probar_regreso_antes_de_purga.py: siembra un TRASLADADO previo directo en
   # postgres-a y le envia una transferencia entrante con la misma cedula y el mismo
   # email_carpeta, contra la app-a viva (necesita su bandeja de salida corriendo).

@@ -5,15 +5,16 @@ propia" (POST /api/v1/registro) y "Flujos alternos y de excepcion" (CU-01, A1-A2
 
 Alcance de esta implementacion: el endpoint, la verificacion de identidad contra la
 Registraduria simulada, la llamada sincrona a validateCitizen, la generacion de la
-cuenta de correo y la escritura en outbox. La carga del documento de identidad y la
-notificacion por correo (pasos 8 y 9 del flujo) pertenecen a Documentos y
-Notificaciones, que siguen "Pendiente" segun el estado de la implementacion.
+cuenta de correo y la escritura en outbox. El paso 9 (notificar al correo personal) lo
+dispara `_activar_ciudadano` en app.interoperabilidad.outbox cuando registerCitizen
+confirma el registro, no esta ruta -- el registro puede terminar en
+PENDIENTE_CENTRALIZADOR sin que eso llegue a pasar (E5/E6). La carga del documento de
+identidad (paso 8) pertenece a Documentos, que sigue "Pendiente".
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
@@ -24,7 +25,7 @@ from app.db import SessionLocal
 from app.errors import ErrorDeNegocio
 from app.identidad.correo import generar_email_carpeta
 from app.identidad.registraduria_cliente import RegistraduriaNoDisponible, verificar_identidad
-from app.identidad.seguridad import hash_password
+from app.identidad.seguridad import hash_password, validar_formato_password
 from app.interoperabilidad import CentralizadorNoDisponible, validar_ciudadano
 from app.models import Auditoria, Ciudadano, EstadoCiudadano, Outbox
 
@@ -35,8 +36,6 @@ router = APIRouter(prefix="/api/v1", tags=["ciudadano"])
 # llamadas asincronas de varios minutos): aqui el ciudadano esta esperando la respuesta.
 REINTENTOS_SINCRONOS = 2
 ESPERA_ENTRE_REINTENTOS_SEGUNDOS = 1.0
-
-_PATRON_PASSWORD = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{10,}$")
 
 ESTADOS_YA_REGISTRADO = (
     EstadoCiudadano.ACTIVO,
@@ -56,10 +55,7 @@ class SolicitudRegistro(BaseModel):
     @field_validator("password")
     @classmethod
     def _validar_password(cls, valor: str) -> str:
-        # "Parametros y limites": minimo 10 caracteres, con al menos una letra y un digito.
-        if not _PATRON_PASSWORD.match(valor):
-            raise ValueError("la contrasena debe tener minimo 10 caracteres, con al menos una letra y un digito")
-        return valor
+        return validar_formato_password(valor)
 
 
 class RespuestaRegistro(BaseModel):
@@ -249,6 +245,11 @@ async def registrar(solicitud: SolicitudRegistro, request: Request) -> Respuesta
                     "direccion": solicitud.direccion,
                     "email": email_carpeta,
                     "correlation_id": correlation_id,
+                    # Paso 9 de CU-01 ("el sistema notifica al correo personal"): solo el
+                    # registro real lo pide. _activar_ciudadano (outbox) reencola esta
+                    # misma operacion para recuperar a un ciudadano tras un envio o una
+                    # recepcion fallidos (CU-03/CU-16), y ahi no aplica.
+                    "notificar_registro": True,
                 },
             )
         )

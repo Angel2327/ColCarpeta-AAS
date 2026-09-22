@@ -512,12 +512,40 @@ async def _activar_ciudadano(
 
     En fallo (RECHAZO o REINTENTOS_AGOTADOS) no se hace nada: E5/E6 de CU-01 dicen
     explicitamente que el ciudadano permanece en PENDIENTE_CENTRALIZADOR.
+
+    Este mismo manejador se reutiliza para reencolar `registerCitizen` al recuperar un
+    ciudadano tras un envio o una recepcion fallidos (CU-03/CU-16) -- no solo para el
+    registro original. Paso 9 de CU-01 ("el sistema notifica al correo personal") solo
+    aplica al registro real: `payload["notificar_registro"]` lo marca `registro.py` al
+    encolar, y esos otros reencolados simplemente no lo incluyen.
     """
     if resultado != ResultadoOperacion.EXITO:
         return
     ciudadano = await session.get(Ciudadano, payload["cedula"])
     if ciudadano is not None and ciudadano.estado == EstadoCiudadano.PENDIENTE_CENTRALIZADOR:
         ciudadano.estado = EstadoCiudadano.ACTIVO
+        if payload.get("notificar_registro"):
+            from app.notificaciones.correo import enviar_correo
+
+            await enviar_correo(
+                destinatario=ciudadano.email_personal,
+                asunto="Tu carpeta en ColCarpeta esta activa",
+                cuerpo=(
+                    f"Hola {ciudadano.nombre},\n\n"
+                    "Tu registro en ColCarpeta se completo. Tu direccion de carpeta es "
+                    f"{ciudadano.email_carpeta}; usala (o tu cedula) para iniciar sesion.\n"
+                ),
+            )
+            session.add(
+                Auditoria(
+                    actor="sistema",
+                    accion="registro.notificacion_enviada",
+                    recurso=str(ciudadano.id),
+                    ciudadano_id=ciudadano.id,
+                    correlation_id=payload.get("correlation_id"),
+                    detalle={"enviado_a": ciudadano.email_personal},
+                )
+            )
 
 
 async def _actualizar_autenticacion_documento(
@@ -545,6 +573,60 @@ async def _actualizar_autenticacion_documento(
     documento.autenticacion_actualizada_en = datetime.now(timezone.utc)
 
 
+async def _emitir_token_primer_acceso(session: AsyncSession, ciudadano: Ciudadano, payload: dict) -> None:
+    """Un ciudadano recibido por transferencia llega sin `password_hash`: no puede
+    iniciar sesion hasta establecer una contrasena. Si trajo `contactEmail`
+    (`email_personal`), se genera un token de un solo uso y se envia (simulado) para
+    que pueda hacerlo; si no trajo, no hay a donde enviarlo y queda pendiente sin
+    inventar un canal alterno -- solo auditado.
+    """
+    from app.config import get_config
+    from app.identidad.token_acceso import generar_token
+    from app.notificaciones.correo import enviar_correo
+
+    if not ciudadano.email_personal:
+        session.add(
+            Auditoria(
+                actor="sistema",
+                accion="primer_acceso.sin_canal",
+                recurso=str(ciudadano.id),
+                ciudadano_id=ciudadano.id,
+                correlation_id=payload.get("correlation_id"),
+                detalle={"motivo": "la transferencia no trajo contactEmail; el ciudadano queda pendiente de primer acceso"},
+            )
+        )
+        return
+
+    cfg = get_config()
+    token, token_hash = generar_token()
+    vence_en = datetime.now(timezone.utc) + timedelta(hours=cfg.primer_acceso_token_ttl_horas)
+    ciudadano.token_primer_acceso_hash = token_hash
+    ciudadano.token_primer_acceso_vence_en = vence_en
+
+    await enviar_correo(
+        destinatario=ciudadano.email_personal,
+        asunto="Establece la contrasena de tu carpeta en ColCarpeta",
+        cuerpo=(
+            f"Hola {ciudadano.nombre},\n\n"
+            "Tu carpeta se traslado a ColCarpeta. Para poder iniciar sesion, establece tu "
+            f"contrasena con este codigo de un solo uso (valido por {cfg.primer_acceso_token_ttl_horas} horas):\n\n"
+            f"{token}\n"
+        ),
+    )
+    session.add(
+        Auditoria(
+            actor="sistema",
+            accion="primer_acceso.token_emitido",
+            recurso=str(ciudadano.id),
+            ciudadano_id=ciudadano.id,
+            correlation_id=payload.get("correlation_id"),
+            # El token en claro NUNCA se audita: solo la constancia de que se emitio y a
+            # donde se envio.
+            detalle={"enviado_a": ciudadano.email_personal, "vence_en": vence_en.isoformat()},
+        )
+    )
+
+
 async def _al_finalizar_recepcion_transferencia(
     session: AsyncSession, payload: dict, resultado: ResultadoOperacion, respuesta: Any, error: str | None
 ) -> None:
@@ -566,6 +648,8 @@ async def _al_finalizar_recepcion_transferencia(
     if resultado == ResultadoOperacion.EXITO:
         if ciudadano is not None and ciudadano.estado == EstadoCiudadano.PENDIENTE_CENTRALIZADOR:
             ciudadano.estado = EstadoCiudadano.ACTIVO
+        if ciudadano is not None and ciudadano.password_hash is None:
+            await _emitir_token_primer_acceso(session, ciudadano, payload)
         req_status = 1
     else:
         req_status = 0

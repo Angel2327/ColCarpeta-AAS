@@ -67,6 +67,14 @@ class Ciudadano(Base):
     # local, la define en su primer inicio de sesion. verificar_password() trata NULL
     # como "no puede autenticar con contrasena", nunca como coincidencia.
     password_hash: Mapped[str | None] = mapped_column(String(255))
+    # Token de un solo uso para que un ciudadano recibido por transferencia establezca
+    # su contrasena inicial (ver app.identidad.token_acceso). Hasheado (SHA-256, nunca
+    # en claro); NULL cuando no hay un token vigente. Se invalida (ambas columnas a
+    # NULL) al usarse o al generarse uno nuevo. unique=True: coincide por igualdad
+    # exacta del hash, y dos tokens en claro distintos nunca deberian producir el mismo
+    # hash.
+    token_primer_acceso_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
+    token_primer_acceso_vence_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # totp_secret + totp_estado siguen el enrolamiento (docs/especificacion.md, "Segundo
     # factor"): NULL/sin totp_estado = nunca enrolado. totp_secret_actualizado_en fija el
     # vencimiento de 15 min de un secreto PENDIENTE. totp_ultimo_paso evita reusar un

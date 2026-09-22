@@ -73,6 +73,14 @@ class Config(BaseSettings):
     # hablan por HTTP simple dentro de una red Docker aislada (sin TLS entre
     # contenedores) -- nunca se debe apagar en produccion ni en un .env real.
     transferencia_exigir_https: bool = True
+    # Vigencia del token de un solo uso con el que un ciudadano recibido por
+    # transferencia establece su contrasena inicial (ver app.identidad.token_acceso).
+    primer_acceso_token_ttl_horas: int = 24
+    # Reenvio del token de primer acceso: limite de solicitudes por cedula y por origen
+    # dentro de la ventana, igual patron que el bloqueo de inicio de sesion (derivado de
+    # auditoria, sin tabla propia).
+    primer_acceso_reenvio_maximo: int = 3
+    primer_acceso_reenvio_ventana_minutos: int = 15
 
     registraduria_api_key: str = "clave-interna-de-desarrollo"
 

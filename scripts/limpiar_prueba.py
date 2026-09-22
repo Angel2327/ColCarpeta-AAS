@@ -15,6 +15,11 @@ foreign key a `ciudadano` tiene `ON DELETE SET NULL`, asi que al borrar el
 ciudadano quedan con `ciudadano_id = NULL` en vez de desaparecer o bloquear el borrado.
 
 Herramienta de desarrollo para limpiar datos de prueba, no parte de la API.
+
+Borra contra la base de datos y el centralizador reales -- no hay entorno de pruebas
+aparte. Por eso, despues de mostrar el plan, pide escribir la cedula de nuevo como
+confirmacion explicita antes de borrar nada; cualquier otra respuesta aborta sin tocar
+datos.
 """
 
 from __future__ import annotations
@@ -77,6 +82,18 @@ async def main(cedula: int) -> None:
         ).scalars().all()
 
     await _imprimir_plan(cedula, ciudadano, documentos, transferencias, entradas_outbox)
+
+    if ciudadano is None and not documentos and not transferencias and not entradas_outbox:
+        print("No hay nada que borrar para esa cedula.")
+        return
+
+    respuesta = input(
+        f"\nEsto borra datos REALES contra la base y el centralizador de verdad, sin deshacer. "
+        f"Escribe la cedula ({cedula}) para confirmar, cualquier otra cosa aborta: "
+    ).strip()
+    if respuesta != str(cedula):
+        print("Confirmacion no coincide. Abortado, no se borro nada.")
+        return
 
     for documento in documentos:
         try:
