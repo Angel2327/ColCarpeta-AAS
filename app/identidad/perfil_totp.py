@@ -49,6 +49,14 @@ def _pendiente_vencido(ciudadano: Ciudadano, cfg) -> bool:
 
 @router.post("", response_model=RespuestaEnrolamiento, status_code=201)
 async def iniciar_enrolamiento(request: Request, actual: Ciudadano = Depends(ciudadano_actual)) -> RespuestaEnrolamiento:
+    """Inicia el enrolamiento del segundo factor (TOTP) para el ciudadano autenticado.
+
+    Devuelve el secreto y una URI `otpauth://` lista para generar un código QR en una
+    aplicación autenticadora. El enrolamiento queda pendiente hasta confirmarlo con
+    `POST /confirmar`; una nueva solicitud reemplaza cualquier enrolamiento pendiente
+    anterior, e incluso si el segundo factor ya estaba habilitado, lo reinicia desde
+    cero.
+    """
     async with SessionLocal() as session:
         ciudadano = await session.get(Ciudadano, actual.id)
         assert ciudadano is not None
@@ -82,6 +90,14 @@ async def iniciar_enrolamiento(request: Request, actual: Ciudadano = Depends(ciu
 async def confirmar_enrolamiento(
     solicitud: SolicitudConfirmacion, request: Request, actual: Ciudadano = Depends(ciudadano_actual)
 ) -> None:
+    """Confirma el enrolamiento del segundo factor con un código generado a partir del
+    secreto entregado por `POST /perfil/totp`.
+
+    Al confirmarse, el segundo factor queda habilitado y se exigirá en el inicio de
+    sesión y en las operaciones que lo requieran. Devuelve 409 si no hay un
+    enrolamiento pendiente vigente (nunca se inició, ya se confirmó, o venció el
+    tiempo límite para confirmarlo), o 401 si el código es incorrecto o venció.
+    """
     cfg = get_config()
     async with SessionLocal() as session:
         ciudadano = await session.get(Ciudadano, actual.id)
@@ -128,6 +144,13 @@ async def confirmar_enrolamiento(
 async def deshabilitar_totp(
     solicitud: SolicitudDeshabilitar, request: Request, actual: Ciudadano = Depends(ciudadano_actual)
 ) -> None:
+    """Deshabilita el segundo factor del ciudadano autenticado.
+
+    Exige la contraseña actual y un código del segundo factor todavía vigente, para
+    evitar que una sesión robada pueda desactivarlo por sí sola. Devuelve 409 si el
+    segundo factor no está habilitado, 401 si la contraseña es incorrecta, o 401 si el
+    código es incorrecto o venció.
+    """
     cfg = get_config()
     async with SessionLocal() as session:
         ciudadano = await session.get(Ciudadano, actual.id)

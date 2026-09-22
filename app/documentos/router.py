@@ -131,6 +131,19 @@ async def cargar_documento(
     sustituye_a: uuid.UUID | None = Form(None),
     actual: Ciudadano = Depends(ciudadano_actual),
 ) -> RespuestaDocumento:
+    """Carga un documento en la carpeta del ciudadano autenticado.
+
+    Recibe el archivo (`archivo`, PDF/JPEG/PNG) junto con su título, tipo y,
+    opcionalmente, la entidad emisora y la fecha de emisión. Si `sustituye_a` incluye
+    el id de un documento propio no certificado, ese documento se reemplaza por el
+    nuevo. Devuelve 201 con los metadatos del documento creado, o 200 si el archivo ya
+    se había cargado antes (mismo contenido) y no se crea uno nuevo.
+
+    Puede rechazar la carga con 413 si el archivo excede el tamaño máximo, 415 si el
+    tipo de archivo no está permitido, 409 si la cuota de almacenamiento está agotada
+    o si `sustituye_a` corresponde a un documento certificado, 404 si `sustituye_a` no
+    existe, o 403 si no pertenece al ciudadano autenticado.
+    """
     cfg = get_config()
     contenido = await archivo.read()
 
@@ -259,6 +272,13 @@ async def listar_documentos(
     size: int = TAMANO_PAGINA_DEFECTO,
     actual: Ciudadano = Depends(ciudadano_actual),
 ) -> RespuestaListaDocumentos:
+    """Lista los documentos del ciudadano autenticado.
+
+    Acepta filtros opcionales por tipo (`tipo`), entidad emisora (`entidad`, coincidencia
+    parcial), rango de fecha de emisión (`desde`/`hasta`) y texto en el título (`q`), más
+    paginación (`page`, `size`; tamaño de página máximo 100). Devuelve los documentos más
+    recientes primero, junto con el total de resultados que coinciden con los filtros.
+    """
     page = max(page, 1)
     size = max(1, min(size, TAMANO_PAGINA_MAXIMO))
 
@@ -301,6 +321,11 @@ async def _obtener_propio(session: AsyncSession, documento_id: uuid.UUID, ciudad
 
 @router.get("/{documento_id}", response_model=RespuestaDocumento)
 async def obtener_documento(documento_id: uuid.UUID, actual: Ciudadano = Depends(ciudadano_actual)) -> RespuestaDocumento:
+    """Consulta los metadatos de un documento propio.
+
+    Devuelve 404 si el documento no existe, o 403 si no pertenece al ciudadano
+    autenticado.
+    """
     async with SessionLocal() as session:
         documento = await _obtener_propio(session, documento_id, actual.id)
         return _a_respuesta(documento)
@@ -310,6 +335,12 @@ async def obtener_documento(documento_id: uuid.UUID, actual: Ciudadano = Depends
 async def descargar_documento(
     documento_id: uuid.UUID, request: Request, actual: Ciudadano = Depends(ciudadano_actual)
 ) -> RespuestaDescarga:
+    """Genera un enlace temporal para descargar un documento propio.
+
+    Devuelve una URL firmada y la fecha en que expira; la URL no se reutiliza ni se
+    almacena, y deja de funcionar una vez vencida. Devuelve 404 si el documento no
+    existe, o 403 si no pertenece al ciudadano autenticado.
+    """
     cfg = get_config()
     async with SessionLocal() as session:
         documento = await _obtener_propio(session, documento_id, actual.id)
@@ -346,6 +377,14 @@ def _a_respuesta_autenticacion(d: Documento) -> RespuestaAutenticacion:
 async def solicitar_autenticacion(
     documento_id: uuid.UUID, response: Response, request: Request, actual: Ciudadano = Depends(ciudadano_actual)
 ) -> RespuestaAutenticacion:
+    """Solicita la autenticación de un documento propio ante GovCarpeta (MinTIC).
+
+    La operación es asíncrona: responde 202 con `estado: PENDIENTE` y el resultado se
+    consulta luego con `GET` sobre esta misma ruta. Si el documento ya estaba
+    autenticado, responde 200 con el resultado guardado en vez de solicitarlo de nuevo;
+    si ya había una solicitud en curso, responde 202 sin duplicarla. Devuelve 404 si el
+    documento no existe, o 403 si no pertenece al ciudadano autenticado.
+    """
     async with SessionLocal() as session:
         documento = await _obtener_propio(session, documento_id, actual.id)
 
@@ -394,6 +433,12 @@ async def solicitar_autenticacion(
 async def consultar_autenticacion(
     documento_id: uuid.UUID, actual: Ciudadano = Depends(ciudadano_actual)
 ) -> RespuestaAutenticacion:
+    """Consulta el resultado de la autenticación de un documento propio ante GovCarpeta.
+
+    El estado es `NO_SOLICITADA` si nunca se pidió, `PENDIENTE` mientras se procesa,
+    y `AUTENTICADO` o `RECHAZADO` con el resultado final. Devuelve 404 si el documento
+    no existe, o 403 si no pertenece al ciudadano autenticado.
+    """
     async with SessionLocal() as session:
         documento = await _obtener_propio(session, documento_id, actual.id)
         return _a_respuesta_autenticacion(documento)

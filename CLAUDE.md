@@ -139,7 +139,7 @@ nombrar al destino: se queda `ENVIADA`, no se resuelve sola, y queda auditado co
      `scripts/probar_regreso_antes_de_purga.py`: documento y objeto S3 viejos borrados,
      documento nuevo guardado, ciudadano llega a `ACTIVO` (no se queda colgado en
      `TRASLADADO`).
-   - **Dos ciudadanos *distintos*, de operadores de origen distintos, que por
+   - **Dos ciudadanos _distintos_, de operadores de origen distintos, que por
      coincidencia generan el mismo `citizenEmail` (mismo nombre y año) hacia el mismo
      destino — sigue sin manejarse.** La inserción viola la unicidad y
      `_recibir_transferencia` la trata como rechazo de negocio genérico (descarta al
@@ -439,3 +439,10 @@ arriba en "Estado actual".
 - Un módulo por componente lógico bajo `app/`. Las fronteras entre módulos se respetan
   aunque hoy compartan proceso: la arquitectura objetivo separa `interoperabilidad`.
 - Cuando termines una parte, actualiza la sección **Estado actual** de este archivo.
+- **Los docstrings de las rutas son documentación pública.** FastAPI los publica
+  tal cual en `/docs`, que es parte de la entrega y la ve el profesor. Deben
+  decir qué hace la operación, qué recibe, qué devuelve y qué errores da. Nunca
+  nombres de módulos internos, rutas de archivos del repositorio, referencias a
+  este `CLAUDE.md` ni justificaciones de diseño: eso va en comentarios dentro de
+  la función. Al crear o modificar una ruta, revisa que su docstring siga
+  cumpliendo esto.

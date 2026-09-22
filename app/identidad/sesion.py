@@ -113,6 +113,18 @@ def _registrar(
 
 @router.post("/sesion", response_model=RespuestaSesion)
 async def iniciar_sesion(solicitud: SolicitudSesion, request: Request) -> RespuestaSesion:
+    """Inicia sesión y devuelve un token de acceso.
+
+    `usuario` acepta la cédula o la dirección de carpeta (`email_carpeta`). Si el
+    ciudadano tiene el segundo factor habilitado, la primera petición sin
+    `codigo_totp` responde 428 (la contraseña ya se validó, pero no se emite token);
+    se repite la petición completa incluyendo el código para obtenerlo.
+
+    Devuelve 423 si se superó el número de intentos fallidos permitidos (por cédula o
+    por origen), 401 si el usuario o la contraseña son incorrectos, 409 si la carpeta
+    está en proceso de traslado o ya fue trasladada a otro operador, o 401 si el
+    código del segundo factor es incorrecto o venció.
+    """
     cfg = get_config()
     origen = _origen(request)
     correlation_id = _correlation_id(request)
@@ -215,6 +227,11 @@ async def iniciar_sesion(solicitud: SolicitudSesion, request: Request) -> Respue
 
 @router.delete("/sesion", status_code=204, response_model=None)
 async def cerrar_sesion(request: Request, ciudadano: Ciudadano = Depends(ciudadano_actual)) -> None:
+    """Cierra la sesión actual.
+
+    El token de acceso usado en esta petición no se invalida: sigue siendo válido
+    hasta que expira por su cuenta. El cliente debe descartarlo por su lado.
+    """
     async with SessionLocal() as session:
         _registrar(
             session,

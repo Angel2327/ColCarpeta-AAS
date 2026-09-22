@@ -36,6 +36,14 @@ async def ciclo_de_vida(app: FastAPI):
 
 app = FastAPI(
     title="ColCarpeta — Operador de Carpeta Ciudadana",
+    description=(
+        "API de ColCarpeta, un operador de Carpeta Ciudadana: permite a un ciudadano "
+        "registrarse, iniciar sesion, cargar y consultar sus documentos, solicitar la "
+        "autenticacion de un documento ante el sistema nacional GovCarpeta, y trasladar "
+        "su carpeta a otro operador. Las rutas bajo `/api` (sin version) implementan el "
+        "acuerdo de interoperabilidad entre operadores y no llevan el sobre de error de "
+        "las demas rutas."
+    ),
     version="0.1.0",
     lifespan=ciclo_de_vida,
 )
@@ -54,6 +62,11 @@ async def correlacion(request: Request, call_next):
 
 @app.get("/health", tags=["operacion"])
 async def health():
+    """Verifica que el servicio esté disponible.
+
+    Devuelve el nombre e identificador del operador ante el MinTIC y la versión de la
+    API. No requiere autenticación.
+    """
     cfg = get_config()
     return {
         "status": "ok",

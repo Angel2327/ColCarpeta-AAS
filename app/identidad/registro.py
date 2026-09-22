@@ -75,6 +75,19 @@ def _correlation_id(request: Request) -> str | None:
 
 @router.post("/registro", response_model=RespuestaRegistro, status_code=201)
 async def registrar(solicitud: SolicitudRegistro, request: Request) -> RespuestaRegistro:
+    """Registra un nuevo ciudadano en ColCarpeta.
+
+    Verifica la identidad del ciudadano y genera su dirección de carpeta
+    (`email_carpeta`), que es permanente y no puede cambiarse después. El estado
+    devuelto puede ser `PENDIENTE_CENTRALIZADOR`: es normal justo después de
+    registrarse, mientras se completa la afiliación ante el sistema nacional; la
+    carpeta se considera activa cuando el estado pasa a `ACTIVO`.
+
+    Devuelve 409 si la cédula ya está registrada en ColCarpeta o ya está afiliada a
+    otro operador, 409 si no fue posible confirmar la identidad del ciudadano, o 503
+    si el servicio de verificación de identidad o el sistema nacional no están
+    disponibles en este momento.
+    """
     cfg = get_config()
     correlation_id = _correlation_id(request)
 

@@ -152,6 +152,15 @@ def _email_valido(valor: object) -> bool:
 
 @router.post("/transferCitizen")
 async def recibir_transferencia(request: Request) -> JSONResponse:
+    """Recibe la transferencia de un ciudadano desde otro operador de Carpeta
+    Ciudadana.
+
+    Implementa el formato de intercambio acordado entre operadores: no usa el sobre
+    de error de las demás rutas de esta API. Responde siempre 200 de inmediato; la
+    descarga de los documentos y la afiliación ante el sistema nacional ocurren
+    después, de forma asíncrona, y el resultado se notifica al `confirmAPI` indicado
+    en la solicitud. Responde 400 si el cuerpo de la solicitud es inválido.
+    """
     # Nunca debe dejar escapar una excepcion: el manejador global de Exception en
     # app/main.py aplicaria el sobre {"error": {...}}, y esta ruta tiene prohibido
     # usarlo (CLAUDE.md). Cualquier fallo no previsto se registra y se responde 500
@@ -282,6 +291,15 @@ def _origen_coincide(request: Request, operador: OperadorCache) -> bool:
 
 @router.post("/transferCitizenConfirm")
 async def confirmar_recepcion(request: Request) -> JSONResponse:
+    """Recibe la confirmación de una transferencia enviada previamente a otro
+    operador.
+
+    Implementa el formato de intercambio acordado entre operadores: no usa el sobre
+    de error de las demás rutas de esta API. `req_status` vale `1` si el ciudadano
+    quedó afiliado al operador destino, o `0` si no. Responde siempre 200; una
+    confirmación que no corresponda a ninguna transferencia en curso, o repetida, se
+    descarta sin efecto. Responde 400 si el cuerpo de la solicitud es inválido.
+    """
     # Misma razon que en recibir_transferencia: nunca dejar escapar una excepcion hacia
     # el manejador global (aplicaria nuestro sobre de error, prohibido en esta ruta).
     try:
@@ -418,16 +436,17 @@ async def solicitar_traslado(
     request: Request,
     actual: Ciudadano = Depends(ciudadano_actual),
 ) -> RespuestaTraslado:
-    """CU-03: solicitar traslado a otro operador. No exige segundo factor
-    (docs/especificacion.md, "Operaciones que lo exigen"). Responde rapido: el envio de
-    verdad -- enlaces firmados, `unregisterCitizen`, el `POST` al destino y marcar
-    `ENVIADA` -- lo hace `app.interoperabilidad.outbox` (`enviarTransferencia`).
+    """Solicita el traslado de la carpeta del ciudadano autenticado a otro operador.
 
-    El operador destino se resuelve por `_id` del directorio (CLAUDE.md, trampa 5), y
-    solo contra lo que ya haya en `operador_cache` en este momento -- llamar a
-    `getOperators` desde la ruta violaria "el centralizador no va en la ruta critica".
-    El refresco "a demanda antes de cada envio" de verdad ocurre dentro del propio
-    manejador de outbox, justo antes de enviar.
+    `operador_destino_id` es el identificador del operador destino en el directorio
+    público de operadores. La operación es asíncrona: responde 202 y el ciudadano
+    pasa a estado `EN_TRANSFERENCIA` mientras se completa el traslado; al finalizar
+    queda `TRASLADADO` si el traslado fue exitoso, o vuelve a estar activo en
+    ColCarpeta si no se pudo completar. No exige segundo factor.
+
+    Devuelve 409 si la carpeta no está activa, 409 si ya hay un traslado en curso
+    para este ciudadano, o 404 si el operador destino no existe en el directorio o no
+    publica un endpoint de transferencia utilizable.
     """
     async with SessionLocal() as session:
         ciudadano = await session.get(Ciudadano, actual.id)
@@ -448,6 +467,11 @@ async def solicitar_traslado(
         if ya_en_curso is not None:
             raise ErrorDeNegocio("TRASLADO_EN_CURSO", "Ya hay un traslado en curso para tu cedula.")
 
+        # Se resuelve solo contra lo que ya haya en operador_cache en este momento:
+        # llamar a getOperators desde la ruta violaria "el centralizador no va en la
+        # ruta critica". El refresco "a demanda antes de cada envio" de verdad ocurre
+        # dentro del propio manejador de outbox (enviarTransferencia), justo antes de
+        # enviar -- si el cache esta desactualizado, ese refresco posterior lo corrige.
         operador = await session.get(OperadorCache, solicitud.operador_destino_id)
         url_valida = operador is not None and operador.transfer_api_url and (
             operador.transfer_api_url.startswith("https://") or not get_config().transferencia_exigir_https

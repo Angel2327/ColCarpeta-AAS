@@ -32,6 +32,13 @@ async def verificar(
     solicitud: SolicitudVerificacion,
     x_api_key: str | None = Header(default=None, alias="X-Api-Key"),
 ):
+    """Simula la verificación de identidad de la Registraduría Nacional.
+
+    Requiere una clave de API en el encabezado `X-Api-Key`. La respuesta es
+    determinista según el último dígito de la cédula: termina en 0 responde 404
+    (identidad no confirmada); termina en 9 demora unos segundos y responde 504; el
+    resto responde 200 con la identidad confirmada.
+    """
     cfg = get_config()
     if x_api_key != cfg.registraduria_api_key:
         raise HTTPException(status_code=401, detail="clave de API invalida")
