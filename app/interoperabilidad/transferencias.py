@@ -1,20 +1,27 @@
-"""CU-16: recepcion de transferencias de ciudadanos desde otros operadores.
+"""CU-16 (recepcion) y CU-03 (envio) de transferencias de ciudadanos entre operadores.
 
 Ver docs/especificacion.md: "Contratos", "Extensiones al enviar", "Tolerancia al
-recibir", "Orden de recepcion", "Aceptacion de confirmaciones", AD-09 y AD-10.
+recibir", "Orden de envio", "Orden de recepcion", "Aceptacion de confirmaciones", AD-09
+y AD-10.
 
-Estas rutas viven fuera de `/api/v1` y NO usan el sobre `{"error": {...}}` de
-app/errors.py: responden con lo que define el acuerdo entre los equipos del curso, para
-no romper a los demas operadores (CLAUDE.md). Por eso el cuerpo se lee a mano con
-`request.json()` y nunca se declara un modelo Pydantic como parametro de FastAPI -- un
-422 de validacion SI pasaria por nuestro sobre, via el manejador global de
-`RequestValidationError` registrado en app/main.py.
+`router` (prefijo `/api`, CU-16 y la confirmacion que recibe CU-03) vive fuera de
+`/api/v1` y NO usa el sobre `{"error": {...}}` de app/errors.py: responde con lo que
+define el acuerdo entre los equipos del curso, para no romper a los demas operadores
+(CLAUDE.md). Por eso el cuerpo se lee a mano con `request.json()` y nunca se declara un
+modelo Pydantic como parametro de FastAPI -- un 422 de validacion SI pasaria por
+nuestro sobre, via el manejador global de `RequestValidationError` registrado en
+app/main.py.
 
 "La ruta responde rapido": aqui no se descarga ningun documento, ni se llama a ningun
 otro operador, ni al centralizador. Todo eso -- incluida la validacion de tamano y
 cantidad del paso 1 de "Orden de recepcion" -- ocurre en
 `app.interoperabilidad.outbox`, para no meter un sistema externo (el operador de
-origen) en la ruta critica, con el mismo criterio que ya se aplica al centralizador.
+origen o destino) en la ruta critica, con el mismo criterio que ya se aplica al
+centralizador.
+
+`router_propio` (prefijo `/api/v1/perfil`, CU-03) es la ruta propia que el ciudadano
+usa para solicitar el traslado. Esta SI usa el sobre de error de `app/errors.py`, como
+cualquier otra ruta de `/api/v1` -- es una API distinta, no el acuerdo del ecosistema.
 """
 
 from __future__ import annotations
@@ -24,12 +31,15 @@ import socket
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.config import get_config
 from app.db import SessionLocal
+from app.errors import ErrorDeNegocio
+from app.identidad.dependencias import ciudadano_actual
 from app.models import (
     Auditoria,
     Ciudadano,
@@ -42,6 +52,7 @@ from app.models import (
 )
 
 router = APIRouter(prefix="/api", tags=["interoperabilidad"])
+router_propio = APIRouter(prefix="/api/v1/perfil", tags=["traslado"])
 
 logger = logging.getLogger("colcarpeta.transferencias")
 
@@ -175,9 +186,17 @@ async def _recibir_transferencia_impl(request: Request) -> JSONResponse:
         # Idempotencia ("Reglas de operacion"): "una transferencia ya recibida no se
         # procesa dos veces". Si ya existe el ciudadano, o ya hay una recepcion en
         # curso para esa cedula, se descarta sin duplicar nada.
+        #
+        # Excepcion: TRASLADADO no cuenta como "ya existe" para este chequeo. Esa fila
+        # es un ciudadano que YA SE FUE de ColCarpeta y esta pendiente de la purga
+        # diferida (PURGE_DELAY_DAYS) -- si vuelve por una transferencia real antes de
+        # que se cumpla, no es un duplicado de nada, es un regreso legitimo. Dejarlo
+        # pasar aqui es necesario para que `_recibir_transferencia` (bandeja de salida)
+        # llegue a correr y reemplace el registro viejo -- ver CLAUDE.md.
         ciudadano = await session.get(Ciudadano, cedula)
+        cuenta_como_existente = ciudadano is not None and ciudadano.estado != EstadoCiudadano.TRASLADADO
         ya_en_curso = False
-        if ciudadano is None:
+        if not cuenta_como_existente:
             resultado = await session.execute(
                 select(Outbox.id).where(
                     Outbox.operacion == "receiveTransferCitizen",
@@ -187,7 +206,7 @@ async def _recibir_transferencia_impl(request: Request) -> JSONResponse:
             )
             ya_en_curso = resultado.first() is not None
 
-        if ciudadano is not None or ya_en_curso:
+        if cuenta_como_existente or ya_en_curso:
             session.add(
                 Auditoria(
                     actor="sistema",
@@ -382,3 +401,85 @@ async def _confirmar_recepcion_impl(request: Request) -> JSONResponse:
         await session.commit()
 
     return _ack()
+
+
+class SolicitudTraslado(BaseModel):
+    operador_destino_id: str = Field(min_length=1)
+
+
+class RespuestaTraslado(BaseModel):
+    estado: EstadoCiudadano
+
+
+@router_propio.post("/traslado", response_model=RespuestaTraslado, status_code=202)
+async def solicitar_traslado(
+    solicitud: SolicitudTraslado,
+    response: Response,
+    request: Request,
+    actual: Ciudadano = Depends(ciudadano_actual),
+) -> RespuestaTraslado:
+    """CU-03: solicitar traslado a otro operador. No exige segundo factor
+    (docs/especificacion.md, "Operaciones que lo exigen"). Responde rapido: el envio de
+    verdad -- enlaces firmados, `unregisterCitizen`, el `POST` al destino y marcar
+    `ENVIADA` -- lo hace `app.interoperabilidad.outbox` (`enviarTransferencia`).
+
+    El operador destino se resuelve por `_id` del directorio (CLAUDE.md, trampa 5), y
+    solo contra lo que ya haya en `operador_cache` en este momento -- llamar a
+    `getOperators` desde la ruta violaria "el centralizador no va en la ruta critica".
+    El refresco "a demanda antes de cada envio" de verdad ocurre dentro del propio
+    manejador de outbox, justo antes de enviar.
+    """
+    async with SessionLocal() as session:
+        ciudadano = await session.get(Ciudadano, actual.id)
+        assert ciudadano is not None
+
+        if ciudadano.estado != EstadoCiudadano.ACTIVO:
+            raise ErrorDeNegocio("ESTADO_INVALIDO", "Tu carpeta no esta activa.")
+
+        # "Solo una transferencia puede estar en estado ENVIADA por ciudadano" (Modelo
+        # de datos, relacion ciudadano-transferencia).
+        ya_en_curso = (
+            await session.execute(
+                select(Transferencia.id).where(
+                    Transferencia.ciudadano_id == actual.id, Transferencia.estado == EstadoTransferencia.ENVIADA
+                )
+            )
+        ).first()
+        if ya_en_curso is not None:
+            raise ErrorDeNegocio("TRASLADO_EN_CURSO", "Ya hay un traslado en curso para tu cedula.")
+
+        operador = await session.get(OperadorCache, solicitud.operador_destino_id)
+        url_valida = operador is not None and operador.transfer_api_url and (
+            operador.transfer_api_url.startswith("https://") or not get_config().transferencia_exigir_https
+        )
+        if not url_valida:
+            raise ErrorDeNegocio(
+                "OPERADOR_NO_DISPONIBLE",
+                "El operador destino no esta en el directorio o no publica un endpoint de transferencia seguro.",
+            )
+
+        ciudadano.estado = EstadoCiudadano.EN_TRANSFERENCIA
+        session.add(
+            Outbox(
+                operacion="enviarTransferencia",
+                payload={
+                    "cedula": actual.id,
+                    "operador_destino_id": solicitud.operador_destino_id,
+                    "correlation_id": _correlation_id(request),
+                },
+            )
+        )
+        session.add(
+            Auditoria(
+                actor=str(actual.id),
+                accion="transferencia.solicitada",
+                recurso=str(actual.id),
+                ciudadano_id=actual.id,
+                correlation_id=_correlation_id(request),
+                detalle={"operador_destino_id": solicitud.operador_destino_id},
+            )
+        )
+        await session.commit()
+
+        response.status_code = 202
+        return RespuestaTraslado(estado=ciudadano.estado)

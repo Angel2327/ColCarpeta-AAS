@@ -41,3 +41,131 @@ services:
       - --base-url=http://app:8000
       - --confirmacion-bind=0.0.0.0
       - --confirmacion-host=prueba-transferencia
+
+  # --- CU-03 (envio) + CU-16 (recepcion) entre dos instancias propias -----------------
+  # Dos operadores independientes ("app-a" envia, "app-b" recibe), cada uno con su
+  # propia base de datos Postgres local y desechable -- a diferencia de "app" arriba,
+  # estos NO tocan la base de datos real de Supabase ni el MinTIC real: "mock-centralizador"
+  # (scripts/mock_centralizador.py) hace de centralizador para ambos, con estado en
+  # memoria. Es la forma de probar el ciclo completo sin arriesgar el directorio
+  # compartido por 72 equipos ni inventar cedulas contra el servicio real.
+  # Ambos SI comparten el bucket S3 real (mismo .env): las claves de objeto son
+  # aleatorias, no hay riesgo de choque, y evita levantar un S3 falso solo para esto.
+  #
+  # Uso:
+  #   docker compose -f docker-compose.test.yml up --build -d postgres-a postgres-b mock-centralizador app-a app-b
+  #   docker compose -f docker-compose.test.yml run --rm prueba-envio
+  #   docker compose -f docker-compose.test.yml down -v   # -v: tambien borra los datos de postgres-a/b
+
+  postgres-a:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=colcarpeta_a
+
+  postgres-b:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=colcarpeta_b
+
+  mock-centralizador:
+    build: .
+    entrypoint: ["uvicorn", "scripts.mock_centralizador:app", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      # Directorio falso: los dos operadores de esta prueba, resueltos por _id (nunca
+      # por operatorName -- CLAUDE.md, trampa 5). Las URLs son http simple porque no
+      # hay TLS entre contenedores; ver TRANSFERENCIA_EXIGIR_HTTPS=false mas abajo.
+      - >-
+        MOCK_DIRECTORIO={"test-operador-a": {"operatorName": "Operador A (prueba)", "transferAPIURL": "http://app-a:8000/api/transferCitizen"},
+        "test-operador-b": {"operatorName": "Operador B (prueba)", "transferAPIURL": "http://app-b:8000/api/transferCitizen"}}
+
+  app-a:
+    build: .
+    depends_on:
+      - postgres-a
+      - mock-centralizador
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./.env:/app/.env:ro
+    # El .env montado trae las credenciales reales (JWT, S3); las variables de abajo
+    # SOBRESCRIBEN puntualmente lo que debe ser propio de esta instancia -- pydantic-
+    # settings da prioridad a las variables de entorno sobre el archivo .env.
+    environment:
+      - PORT=8000
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+      - GOVCARPETA_URL=http://mock-centralizador:8080
+      - OPERATOR_ID=test-operador-a
+      - OPERATOR_NAME=Operador A (prueba)
+      - PUBLIC_BASE_URL=http://app-a:8000
+      - TRANSFERENCIA_EXIGIR_HTTPS=false
+      - OUTBOX_INTERVALO_SEGUNDOS=3
+      - DIRECTORIO_OPERADORES_REFRESCO_SEGUNDOS=5
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+
+  app-b:
+    build: .
+    depends_on:
+      - postgres-b
+      - mock-centralizador
+    ports:
+      - "8002:8000"
+    volumes:
+      - ./.env:/app/.env:ro
+    environment:
+      - PORT=8000
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-b:5432/colcarpeta_b
+      - GOVCARPETA_URL=http://mock-centralizador:8080
+      - OPERATOR_ID=test-operador-b
+      - OPERATOR_NAME=Operador B (prueba)
+      - PUBLIC_BASE_URL=http://app-b:8000
+      - TRANSFERENCIA_EXIGIR_HTTPS=false
+      - OUTBOX_INTERVALO_SEGUNDOS=3
+      - DIRECTORIO_OPERADORES_REFRESCO_SEGUNDOS=5
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+
+  prueba-envio:
+    build: .
+    depends_on:
+      - app-a
+      - app-b
+    entrypoint: ["python", "scripts/probar_envio_transferencia.py"]
+    command:
+      - --base-url-a=http://app-a:8000
+      - --database-url-a=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+      - --database-url-b=postgresql://postgres:postgres@postgres-b:5432/colcarpeta_b
+      - --operador-destino-id=test-operador-b
+
+  # scripts/probar_reconciliacion.py: prueba _reconciliar_transferencias() en aislamiento,
+  # sin pasar por app-a como servidor vivo (evita que su propio outbox tambien intente
+  # tocar las mismas filas). DATABASE_URL/GOVCARPETA_URL iguales a los de app-a: usa la
+  # misma base de datos y el mismo centralizador falso.
+  prueba-reconciliacion:
+    build: .
+    depends_on:
+      - postgres-a
+      - mock-centralizador
+    volumes:
+      - ./.env:/app/.env:ro
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+      - GOVCARPETA_URL=http://mock-centralizador:8080
+      - OPERATOR_ID=test-operador-a
+      - OPERATOR_NAME=Operador A (prueba)
+    entrypoint: ["python", "scripts/probar_reconciliacion.py"]
+
+  # scripts/probar_regreso_antes_de_purga.py: siembra un TRASLADADO previo directo en
+  # postgres-a y le envia una transferencia entrante con la misma cedula y el mismo
+  # email_carpeta, contra la app-a viva (necesita su bandeja de salida corriendo).
+  prueba-regreso:
+    build: .
+    depends_on:
+      - app-a
+    volumes:
+      - ./.env:/app/.env:ro
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+    entrypoint: ["python", "scripts/probar_regreso_antes_de_purga.py"]
+    command:
+      - --base-url=http://app-a:8000

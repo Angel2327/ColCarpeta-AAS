@@ -22,7 +22,18 @@ de negocio y no se reintenta: la entrada pasa a FALLIDO de una vez.
 
 Operaciones registradas en `MANEJADORES`: `registerCitizen`, `unregisterCitizen` y
 `authenticateDocument` (centralizador); `receiveTransferCitizen` y
-`confirmarTransferencia` (CU-16, otros operadores).
+`confirmarTransferencia` (CU-16, recepcion); `enviarTransferencia` (CU-03, envio).
+
+Este mismo bucle de fondo (`ejecutar_bandeja_de_salida`) tambien hace mantenimiento
+periodico cada `DIRECTORIO_OPERADORES_REFRESCO_SEGUNDOS` (15 min por defecto), sin
+depender de un scheduler aparte (AD-07: sin broker de mensajeria dedicado):
+  - Refresca `operador_cache` desde `getOperators` ("Directorio de operadores").
+  - Reconcilia transferencias `ENVIADA` mas viejas que `TRANSFER_CONFIRM_TIMEOUT` sin
+    confirmacion, consultando `validateCitizen` en vez de dejarlas colgadas para
+    siempre ("Aceptacion de confirmaciones").
+  - Purga fisicamente las transferencias `CONFIRMADA` cuyo `purgar_despues_de` ya paso
+    ("Borrado").
+Ver `_tareas_periodicas`.
 """
 
 from __future__ import annotations
@@ -48,7 +59,10 @@ from app.models import (
     EstadoAutenticacionDocumento,
     EstadoCiudadano,
     EstadoOutbox,
+    EstadoTransferencia,
+    OperadorCache,
     Outbox,
+    Transferencia,
 )
 
 logger = logging.getLogger("colcarpeta.outbox")
@@ -143,7 +157,7 @@ async def _recibir_transferencia(gov: GovCarpeta, payload: dict) -> None:
     """
     from app.config import get_config
     from app.db import SessionLocal
-    from app.documentos.almacenamiento import generar_clave, subir_objeto
+    from app.documentos.almacenamiento import FalloAlmacenamiento, eliminar_objeto, generar_clave, subir_objeto
     from app.identidad.correo import generar_email_carpeta
     from app.interoperabilidad.operadores import descargar, obtener_tamano
 
@@ -168,7 +182,59 @@ async def _recibir_transferencia(gov: GovCarpeta, payload: dict) -> None:
             f"el maximo es {cfg.transferencia_tamano_maximo_bytes}"
         )
 
-    # Paso 2: crear el ciudadano si no existe todavia (idempotente ante reintentos).
+    # Paso 1b: si esta cedula ya fue nuestra y se traslado (TRASLADADO), y la purga
+    # diferida de esa salida todavia no se cumplio, su fila vieja se reemplaza antes de
+    # seguir. Decision (ver CLAUDE.md para la discusion completa): AD-10 no exige
+    # conservar el historial local mas alla de PURGE_DELAY_DAYS una vez que esa salida
+    # ya quedo CONFIRMADA -- la fila `transferencia` (que sobrevive a la purga, ver
+    # `_purgar_transferencias`) es el rastro permanente, no la fila `ciudadano`. No hay
+    # motivo para bloquear el regreso hasta que se cumplan los dias, y sin este paso la
+    # insercion de mas abajo chocaria contra la propia `email_carpeta` de esa fila vieja
+    # (UNIQUE) -- una colision contra si mismo, no contra otra persona (esa otra
+    # colision, entre dos ciudadanos distintos, sigue sin resolverse: ver CLAUDE.md).
+    # Solo aplica a TRASLADADO especificamente: cualquier otro estado existente para
+    # esta cedula (ACTIVO, EN_TRANSFERENCIA, PENDIENTE_VERIFICACION) es un conflicto de
+    # verdad -- alguien mas afirma poder enviarnos a un ciudadano que ya es, o esta por
+    # ser, nuestro por otra via -- y debe seguir sin tocarse.
+    async with SessionLocal() as session:
+        anterior = await session.get(Ciudadano, cedula)
+        if anterior is not None and anterior.estado == EstadoCiudadano.TRASLADADO:
+            documentos_viejos = (
+                await session.execute(select(Documento).where(Documento.ciudadano_id == cedula))
+            ).scalars().all()
+            claves_viejas = [d.s3_key for d in documentos_viejos]
+            for documento in documentos_viejos:
+                await session.delete(documento)
+            await session.delete(anterior)
+            session.add(
+                Auditoria(
+                    actor="sistema",
+                    accion="transferencia.registro_anterior_reemplazado",
+                    recurso=str(cedula),
+                    ciudadano_id=None,
+                    correlation_id=payload.get("correlation_id"),
+                    detalle={
+                        "motivo": "el ciudadano vuelve por transferencia antes de que se cumpliera "
+                        "la purga diferida de su traslado anterior",
+                        "documentos_descartados": len(claves_viejas),
+                    },
+                )
+            )
+            # Commit propio, en su propia transaccion: el paso 2 de abajo inserta un
+            # Ciudadano nuevo con la MISMA cedula (clave primaria). Si el borrado y esa
+            # insercion cayeran en el mismo flush, SQLAlchemy procesa inserts antes que
+            # deletes -- violaria la clave primaria contra la fila vieja, que todavia no
+            # se habria borrado de verdad. Confirmando el borrado aparte, ya no existe
+            # cuando el paso 2 intenta crear la fila nueva.
+            await session.commit()
+            for clave in claves_viejas:
+                try:
+                    eliminar_objeto(clave=clave)
+                except FalloAlmacenamiento:
+                    logger.warning("no se pudo borrar el objeto %s del registro anterior de %s", clave, cedula)
+
+    # Paso 2: crear el ciudadano si no existe todavia (idempotente ante reintentos; tras
+    # el paso 1b, tambien cubre a quien vuelve tras un traslado previo).
     async with SessionLocal() as session:
         ciudadano = await session.get(Ciudadano, cedula)
         if ciudadano is None:
@@ -283,12 +349,153 @@ async def _confirmar_transferencia_operador(gov: GovCarpeta, payload: dict) -> N
     )
 
 
+async def _actualizar_cache_operadores(gov: GovCarpeta, session: AsyncSession) -> None:
+    """"Directorio de operadores": upsert de `operador_cache` desde `getOperators`.
+    Se resuelve siempre por `_id` (nunca por `operatorName`: el directorio trae
+    nombres duplicados -- CLAUDE.md, trampa 5). El recorte de espacios en
+    `transfer_api_url` ya lo hace `GovCarpeta.listar_operadores`."""
+    for operador in await gov.listar_operadores():
+        cache = await session.get(OperadorCache, operador.id)
+        if cache is None:
+            session.add(OperadorCache(id=operador.id, nombre=operador.nombre, transfer_api_url=operador.transfer_api_url))
+        else:
+            cache.nombre = operador.nombre
+            cache.transfer_api_url = operador.transfer_api_url
+
+
+async def _refrescar_operador(gov: GovCarpeta, operador_id: str) -> OperadorCache | None:
+    """Refresco "a demanda antes de cada envio": no hay endpoint de un solo operador en
+    `getOperators`, asi que trae el directorio completo y actualiza todo el cache, pero
+    solo devuelve la entrada pedida -- mas fresca que la del refresco periodico de
+    `_tareas_periodicas`, para el caso en que la URL del destino cambio hace poco."""
+    from app.db import SessionLocal
+
+    async with SessionLocal() as session, session.begin():
+        await _actualizar_cache_operadores(gov, session)
+        return await session.get(OperadorCache, operador_id)
+
+
+async def _enviar_transferencia(gov: GovCarpeta, payload: dict) -> None:
+    """CU-03, "Orden de envio": genera enlaces de 24 horas, invoca `unregisterCitizen`,
+    envia `POST /api/transferCitizen` al operador destino y marca la transferencia
+    `ENVIADA`. Cada paso revisa lo que ya quedo hecho en un intento anterior, igual que
+    `_recibir_transferencia`.
+    """
+    from app.config import get_config
+    from app.db import SessionLocal
+    from app.documentos.almacenamiento import generar_url_descarga
+    from app.interoperabilidad.operadores import enviar_ciudadano
+
+    cfg = get_config()
+    cedula = payload["cedula"]
+    operador_destino_id = payload["operador_destino_id"]
+
+    async with SessionLocal() as session:
+        # Idempotencia: si un intento anterior ya llego hasta el paso 4, no reenviar --
+        # solo esperar la confirmacion, que llega por /api/transferCitizenConfirm (o la
+        # resuelve la reconciliacion si nunca llega).
+        ya_enviada = (
+            await session.execute(
+                select(Transferencia.id).where(
+                    Transferencia.ciudadano_id == cedula, Transferencia.estado == EstadoTransferencia.ENVIADA
+                )
+            )
+        ).first()
+        if ya_enviada is not None:
+            return
+
+        ciudadano = await session.get(Ciudadano, cedula)
+        if ciudadano is None:
+            raise ValueError(f"el ciudadano {cedula} ya no existe")
+        documentos = (
+            await session.execute(select(Documento).where(Documento.ciudadano_id == cedula))
+        ).scalars().all()
+        nombre = ciudadano.nombre
+        citizen_email = ciudadano.email_carpeta
+        contact_email = ciudadano.email_personal
+
+    operador = await _refrescar_operador(gov, operador_destino_id)
+    url_valida = operador is not None and operador.transfer_api_url and (
+        operador.transfer_api_url.startswith("https://") or not cfg.transferencia_exigir_https
+    )
+    if not url_valida:
+        # No es transitorio: reintentar no va a cambiar lo que publica el directorio en
+        # los proximos segundos. No se implementa aqui la entrega por correo que
+        # menciona "Directorio de operadores" para este caso -- fuera de alcance de
+        # esta entrega (ver CLAUDE.md, Pendiente).
+        raise ValueError(
+            f"el operador destino {operador_destino_id} no esta en el directorio o "
+            "no publica un transferAPIURL https"
+        )
+
+    # Paso 1: enlaces firmados de 24 horas para todos los documentos, generados de
+    # nuevo en cada intento (igual razon que CU-11: nunca pueden vencer "antes de la
+    # descarga" del destino porque no se reutiliza uno viejo).
+    url_documents = {
+        d.titulo: generar_url_descarga(clave=d.s3_key, ttl_segundos=cfg.presigned_url_ttl_transfer) for d in documentos
+    }
+    documents_metadata = [
+        {
+            "titulo": d.titulo,
+            "tipo": d.tipo,
+            "entidadEmisora": d.entidad_emisora,
+            "fechaEmision": d.fecha_emision.date().isoformat() if d.fecha_emision else None,
+            "certificado": d.certificado,
+        }
+        for d in documentos
+    ]
+
+    # Paso 2: unregisterCitizen. OJO -- no se verifico contra el servicio real si un
+    # segundo intento sobre una cedula ya desligada se comporta de forma idempotente
+    # (CLAUDE.md prohibe probar esto con cedulas inventadas); si el centralizador lo
+    # rechaza de forma no transitoria, `GovCarpeta.desligar_ciudadano` lo traduce hoy en
+    # `CentralizadorNoDisponible` generico (reintentable), no en un `ValueError` de
+    # negocio -- puede reintentar sin llegar a buen puerto hasta agotar los 5 intentos.
+    await gov.desligar_ciudadano(cedula)
+
+    # Paso 3: POST /api/transferCitizen al destino.
+    confirm_api = f"{cfg.public_base_url.rstrip('/')}/api/transferCitizenConfirm"
+    await enviar_ciudadano(
+        url=operador.transfer_api_url,
+        cedula=cedula,
+        nombre=nombre,
+        citizen_email=citizen_email,
+        contact_email=contact_email or "",
+        url_documents=url_documents,
+        documents_metadata=documents_metadata,
+        confirm_api=confirm_api,
+    )
+
+    # Paso 4: marcar ENVIADA.
+    async with SessionLocal() as session:
+        session.add(
+            Transferencia(
+                ciudadano_id=cedula,
+                operador_destino_id=operador_destino_id,
+                confirm_api=confirm_api,
+                estado=EstadoTransferencia.ENVIADA,
+            )
+        )
+        session.add(
+            Auditoria(
+                actor="sistema",
+                accion="transferencia.enviada",
+                recurso=str(cedula),
+                ciudadano_id=cedula,
+                correlation_id=payload.get("correlation_id"),
+                detalle={"operador_destino_id": operador_destino_id, "documentos": len(documentos)},
+            )
+        )
+        await session.commit()
+
+
 MANEJADORES: dict[str, Manejador] = {
     "registerCitizen": _registrar_ciudadano,
     "unregisterCitizen": _desligar_ciudadano,
     "authenticateDocument": _autenticar_documento,
     "receiveTransferCitizen": _recibir_transferencia,
     "confirmarTransferencia": _confirmar_transferencia_operador,
+    "enviarTransferencia": _enviar_transferencia,
 }
 
 
@@ -409,12 +616,49 @@ async def _al_finalizar_recepcion_transferencia(
         )
 
 
+async def _al_finalizar_envio_transferencia(
+    session: AsyncSession, payload: dict, resultado: ResultadoOperacion, respuesta: Any, error: str | None
+) -> None:
+    """CU-03: si el envio no se completo (limites del destino, red agotada tras los 5
+    reintentos, directorio sin URL utilizable, etc.), el ciudadano no puede quedar
+    EN_TRANSFERENCIA para siempre. Se recupera exactamente como un `req_status = 0` real
+    en `_confirmar_recepcion_impl`: vuelve a PENDIENTE_CENTRALIZADOR y se reencola
+    `registerCitizen`, que reutiliza el mismo efecto de CU-01 para llegar a ACTIVO.
+
+    Si el fallo ocurrio ANTES del paso 2 (unregisterCitizen), ese registerCitizen va a
+    encontrar al ciudadano todavia afiliado y el centralizador respondera 501 "ya
+    registrado" -- un rechazo de negocio, no un exito, asi que `_activar_ciudadano` no lo
+    reactiva por si solo hoy. Es la misma limitacion ya aceptada en el camino de
+    recuperacion de `_confirmar_recepcion_impl`, no una nueva.
+    """
+    if resultado == ResultadoOperacion.EXITO:
+        return  # el propio manejador ya creo la fila Transferencia(ENVIADA)
+
+    cedula = payload["cedula"]
+    ciudadano = await session.get(Ciudadano, cedula)
+    if ciudadano is not None and ciudadano.estado == EstadoCiudadano.EN_TRANSFERENCIA:
+        ciudadano.estado = EstadoCiudadano.PENDIENTE_CENTRALIZADOR
+        session.add(
+            Outbox(
+                operacion="registerCitizen",
+                payload={
+                    "cedula": cedula,
+                    "nombre": ciudadano.nombre,
+                    "direccion": ciudadano.direccion,
+                    "email": ciudadano.email_carpeta,
+                    "correlation_id": payload.get("correlation_id"),
+                },
+            )
+        )
+
+
 EfectoAlFinalizar = Callable[[AsyncSession, dict, ResultadoOperacion, Any, str | None], Awaitable[None]]
 
 EFECTOS_AL_FINALIZAR: dict[str, EfectoAlFinalizar] = {
     "registerCitizen": _activar_ciudadano,
     "authenticateDocument": _actualizar_autenticacion_documento,
     "receiveTransferCitizen": _al_finalizar_recepcion_transferencia,
+    "enviarTransferencia": _al_finalizar_envio_transferencia,
 }
 
 
@@ -649,6 +893,204 @@ async def _recuperar_colgadas(
     return recuperadas
 
 
+async def _reconciliar_transferencias(gov: GovCarpeta, session_factory: async_sessionmaker[AsyncSession]) -> int:
+    """"Aceptacion de confirmaciones": si transcurre TRANSFER_CONFIRM_TIMEOUT sin que
+    llegue `confirmAPI` para una transferencia `ENVIADA`, se consulta `validateCitizen`
+    en vez de dejarla colgada para siempre.
+
+    - `200` y el texto nombra al operador destino -> se cierra como si hubiera llegado
+      `req_status = 1`: `CONFIRMADA` y purga programada.
+    - `204` (disponible: nadie la afilio) -> se cierra como `req_status = 0`: se
+      recupera con `registerCitizen`.
+    - `200` pero el texto NO nombra al destino (afiliado a un tercero, dato ambiguo) --
+      no lo cubre la especificacion de forma explicita. No se resuelve sola: queda
+      auditada y se reintenta en la proxima pasada, para no arriesgar una decision
+      equivocada (dejar a alguien afiliado en dos operadores, o recuperar a un
+      ciudadano que en realidad si se traslado).
+    """
+    from app.config import get_config
+    from app.db import SessionLocal
+
+    cfg = get_config()
+    limite = datetime.now(timezone.utc) - timedelta(seconds=cfg.transfer_confirm_timeout)
+    resueltas = 0
+
+    async with session_factory() as session:
+        vencidas = (
+            await session.execute(
+                select(Transferencia.id, Transferencia.ciudadano_id, Transferencia.operador_destino_id).where(
+                    Transferencia.estado == EstadoTransferencia.ENVIADA, Transferencia.enviada_en < limite
+                )
+            )
+        ).all()
+
+    for transferencia_id, cedula, operador_destino_id in vencidas:
+        try:
+            resultado = await gov.validar_ciudadano(cedula)
+        except CentralizadorNoDisponible as exc:
+            logger.warning("reconciliacion de transferencia %s: centralizador no disponible: %s", transferencia_id, exc)
+            continue
+
+        async with SessionLocal() as session, session.begin():
+            transferencia = await session.get(Transferencia, transferencia_id, with_for_update=True)
+            if transferencia is None or transferencia.estado != EstadoTransferencia.ENVIADA:
+                continue  # se resolvio por otra via (confirmAPI) mientras se consultaba
+
+            ciudadano = await session.get(Ciudadano, cedula)
+            operador = await session.get(OperadorCache, operador_destino_id)
+            nombre_destino = (operador.nombre.strip().lower() if operador and operador.nombre else "")
+            mensaje = (resultado.mensaje or "").lower()
+
+            if not resultado.disponible and nombre_destino and nombre_destino in mensaje:
+                transferencia.estado = EstadoTransferencia.CONFIRMADA
+                transferencia.confirmada_en = datetime.now(timezone.utc)
+                transferencia.purgar_despues_de = datetime.now(timezone.utc) + timedelta(days=cfg.purge_delay_days)
+                if ciudadano is not None and ciudadano.estado == EstadoCiudadano.EN_TRANSFERENCIA:
+                    ciudadano.estado = EstadoCiudadano.TRASLADADO
+                accion = "transferencia.reconciliada_confirmada"
+            elif resultado.disponible:
+                transferencia.estado = EstadoTransferencia.FALLIDA
+                if ciudadano is not None and ciudadano.estado == EstadoCiudadano.EN_TRANSFERENCIA:
+                    ciudadano.estado = EstadoCiudadano.PENDIENTE_CENTRALIZADOR
+                    session.add(
+                        Outbox(
+                            operacion="registerCitizen",
+                            payload={
+                                "cedula": cedula,
+                                "nombre": ciudadano.nombre,
+                                "direccion": ciudadano.direccion,
+                                "email": ciudadano.email_carpeta,
+                                "correlation_id": None,
+                            },
+                        )
+                    )
+                accion = "transferencia.reconciliada_recuperada"
+            else:
+                logger.warning(
+                    "reconciliacion de transferencia %s: validateCitizen no nombra al destino %s: %s",
+                    transferencia_id, operador_destino_id, resultado.mensaje,
+                )
+                session.add(
+                    Auditoria(
+                        actor="sistema",
+                        accion="transferencia.reconciliacion_ambigua",
+                        recurso=str(cedula),
+                        ciudadano_id=cedula,
+                        correlation_id=None,
+                        detalle={
+                            "transferencia_id": transferencia_id,
+                            "operador_destino_id": operador_destino_id,
+                            "mensaje_centralizador": resultado.mensaje,
+                        },
+                    )
+                )
+                continue
+
+            session.add(
+                Auditoria(
+                    actor="sistema",
+                    accion=accion,
+                    recurso=str(cedula),
+                    ciudadano_id=cedula,
+                    correlation_id=None,
+                    detalle={"transferencia_id": transferencia_id, "mensaje_centralizador": resultado.mensaje},
+                )
+            )
+            resueltas += 1
+
+    return resueltas
+
+
+async def _purgar_transferencias(session_factory: async_sessionmaker[AsyncSession]) -> int:
+    """"Borrado": purga fisica de lo que ya cumplio `purgar_despues_de`. Borra los
+    documentos y sus objetos del bucket, y el ciudadano; deja registro en auditoria. La
+    fila `transferencia` no se borra -- pasa a `PURGADA` -- porque es el rastro de que
+    el ciudadano existio y se traslado (RNF14, retencion de auditoria)."""
+    from app.db import SessionLocal
+    from app.documentos.almacenamiento import FalloAlmacenamiento, eliminar_objeto
+
+    ahora = datetime.now(timezone.utc)
+    purgadas = 0
+
+    async with session_factory() as session:
+        vencidas = (
+            await session.execute(
+                select(Transferencia.id).where(
+                    Transferencia.estado == EstadoTransferencia.CONFIRMADA,
+                    Transferencia.purgar_despues_de.is_not(None),
+                    Transferencia.purgar_despues_de <= ahora,
+                )
+            )
+        ).scalars().all()
+
+    for transferencia_id in vencidas:
+        async with SessionLocal() as session, session.begin():
+            transferencia = await session.get(Transferencia, transferencia_id, with_for_update=True)
+            if transferencia is None or transferencia.estado != EstadoTransferencia.CONFIRMADA:
+                continue  # otra pasada ya la tomo (con varias replicas corriendo)
+
+            cedula = transferencia.ciudadano_id
+            ciudadano = await session.get(Ciudadano, cedula)
+            documentos = (
+                await session.execute(select(Documento).where(Documento.ciudadano_id == cedula))
+            ).scalars().all()
+            claves = [d.s3_key for d in documentos]
+            for documento in documentos:
+                await session.delete(documento)
+            if ciudadano is not None:
+                await session.delete(ciudadano)
+            transferencia.estado = EstadoTransferencia.PURGADA
+
+            # ciudadano_id=None (no el helper de arriba): esta fila se inserta en el
+            # mismo flush que borra al ciudadano, con lo que la FK ya no puede
+            # apuntarle -- ver el docstring de _ciudadano_id_para_auditoria.
+            session.add(
+                Auditoria(
+                    actor="sistema",
+                    accion="transferencia.purgada",
+                    recurso=str(cedula),
+                    ciudadano_id=None,
+                    correlation_id=None,
+                    detalle={"transferencia_id": transferencia_id, "documentos_purgados": len(claves)},
+                )
+            )
+            await session.flush()
+            for clave in claves:
+                try:
+                    eliminar_objeto(clave=clave)
+                except FalloAlmacenamiento:
+                    logger.warning(
+                        "no se pudo borrar el objeto %s al purgar la transferencia %s", clave, transferencia_id
+                    )
+        purgadas += 1
+
+    return purgadas
+
+
+async def _tareas_periodicas(gov: GovCarpeta, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """Mantenimiento periodico (ver docstring del modulo). Cada paso es independiente:
+    que uno falle no debe bloquear los otros ni tumbar el bucle principal de outbox."""
+    try:
+        async with session_factory() as session, session.begin():
+            await _actualizar_cache_operadores(gov, session)
+    except CentralizadorNoDisponible as exc:
+        logger.warning("no se pudo refrescar el directorio de operadores: %s", exc)
+
+    try:
+        resueltas = await _reconciliar_transferencias(gov, session_factory)
+        if resueltas:
+            logger.info("reconciliacion de transferencias: %s resuelta(s)", resueltas)
+    except Exception:
+        logger.exception("fallo reconciliando transferencias vencidas")
+
+    try:
+        purgadas = await _purgar_transferencias(session_factory)
+        if purgadas:
+            logger.info("purga de transferencias: %s purgada(s)", purgadas)
+    except Exception:
+        logger.exception("fallo purgando transferencias confirmadas")
+
+
 async def procesar_lote(
     session_factory: async_sessionmaker[AsyncSession], gov: GovCarpeta, limite: int = TAMANO_LOTE
 ) -> int:
@@ -722,12 +1164,20 @@ async def ejecutar_bandeja_de_salida(
     from app.interoperabilidad import operadores
 
     factory = session_factory or SessionLocal
-    intervalo = intervalo_segundos if intervalo_segundos is not None else get_config().outbox_intervalo_segundos
+    cfg = get_config()
+    intervalo = intervalo_segundos if intervalo_segundos is not None else cfg.outbox_intervalo_segundos
     gov = GovCarpeta()
+    # datetime.min fuerza el primer mantenimiento en el arranque, sin esperar los 15
+    # min completos -- util tambien para pruebas con un servidor recien levantado.
+    ultimo_mantenimiento = datetime.min.replace(tzinfo=timezone.utc)
     try:
         while True:
             try:
                 await procesar_lote(factory, gov)
+                ahora = datetime.now(timezone.utc)
+                if (ahora - ultimo_mantenimiento).total_seconds() >= cfg.directorio_operadores_refresco_segundos:
+                    await _tareas_periodicas(gov, factory)
+                    ultimo_mantenimiento = ahora
             except asyncio.CancelledError:
                 raise
             except Exception:

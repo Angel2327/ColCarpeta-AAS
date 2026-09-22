@@ -81,13 +81,24 @@ async def _con_limite_duro(corutina, *, descripcion: str):
 
 
 async def obtener_tamano(url: str) -> int | None:
-    """HEAD a la URL del documento. None si el operador no informa el tamano. Es solo
-    una estimacion para el rechazo rapido del paso 1 ("Orden de recepcion"): la URL es
-    de un tercero, no confiable, asi que `descargar` no se apoya en este valor para
-    hacer cumplir el limite de verdad -- ver su propio docstring."""
+    """HEAD a la URL del documento. None si el operador no informa el tamano, o si el
+    HEAD mismo falla (>=400): es solo una estimacion para el rechazo rapido del paso 1
+    ("Orden de recepcion"), nunca la unica proteccion -- `descargar` aplica el limite
+    de verdad en streaming, sobre los bytes que realmente llegan, sin depender de este
+    valor (ver su propio docstring).
+
+    Que el HEAD falle NO significa que la descarga vaya a fallar: se confirmo contra el
+    propio bucket de Supabase que un enlace firmado para GetObject responde 200 a GET
+    pero 403 a HEAD (el gateway S3 de Supabase no lo soporta sobre URLs firmadas, a
+    diferencia de AWS S3 real). Cualquier operador cuyo almacenamiento tenga la misma
+    limitacion -- incluido otro ColCarpeta -- se quedaria sin poder recibir nunca nada si
+    esto se tratara como fallo duro. Solo un error de conexion o tiempo de espera agotado
+    (ver `_con_limite_duro`) sigue siendo `OperadorNoDisponible` y reintentable: ahi si
+    hay indicio real de que el operador no esta disponible, no solo que HEAD no le sirve.
+    """
     r = await _con_limite_duro(_obtener_cliente().head(url, timeout=TIMEOUT_DESCARGA), descripcion=f"HEAD {url}")
     if r.status_code >= 400:
-        raise OperadorNoDisponible(f"HEAD {url}: respuesta {r.status_code}")
+        return None
     largo = r.headers.get("content-length")
     return int(largo) if largo is not None and largo.isdigit() else None
 
@@ -134,6 +145,39 @@ async def confirmar_transferencia(*, url: str, cedula: int, req_status: int) -> 
     que registramos nosotros para una transferencia saliente."""
     r = await _con_limite_duro(
         _obtener_cliente().post(url, json={"id": cedula, "req_status": req_status}, timeout=TIMEOUT_CONFIRMACION),
+        descripcion=f"POST {url}",
+    )
+    if r.status_code >= 400:
+        raise OperadorNoDisponible(f"POST {url}: respuesta {r.status_code}")
+
+
+async def enviar_ciudadano(
+    *,
+    url: str,
+    cedula: int,
+    nombre: str,
+    citizen_email: str,
+    contact_email: str,
+    url_documents: dict[str, str],
+    documents_metadata: list[dict],
+    confirm_api: str,
+) -> None:
+    """POST /api/transferCitizen al `transferAPIURL` del operador destino ("Orden de
+    envio", paso 3). Cuerpo con los campos acordados (`id`, `citizenName`,
+    `citizenEmail`, `urlDocuments`, `confirmAPI`) mas las extensiones aditivas de
+    "Extensiones al enviar" (`contactEmail`, `documentsMetadata`). `citizenEmail`
+    lleva `email_carpeta` (AD-10): es el identificador portable, no un buzon."""
+    cuerpo = {
+        "id": cedula,
+        "citizenName": nombre,
+        "citizenEmail": citizen_email,
+        "contactEmail": contact_email,
+        "urlDocuments": url_documents,
+        "documentsMetadata": documents_metadata,
+        "confirmAPI": confirm_api,
+    }
+    r = await _con_limite_duro(
+        _obtener_cliente().post(url, json=cuerpo, timeout=TIMEOUT_CONFIRMACION),
         descripcion=f"POST {url}",
     )
     if r.status_code >= 400:

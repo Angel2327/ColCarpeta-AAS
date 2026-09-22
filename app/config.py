@@ -64,6 +64,15 @@ class Config(BaseSettings):
     # "Parametros y limites" > Documentos: limites de una transferencia entrante.
     transferencia_documentos_maximo: int = 200
     transferencia_tamano_maximo_bytes: int = 500 * 1024 * 1024
+    # "Directorio de operadores": refresco periodico de operador_cache via getOperators.
+    # El refresco "a demanda antes de cada envio" (CU-03) no usa este intervalo -- ocurre
+    # siempre, sin importar cuanto falte para el proximo refresco periodico.
+    directorio_operadores_refresco_segundos: int = 900
+    # CU-03: exigir que transferAPIURL del destino sea https antes de enviarle algo.
+    # SIEMPRE True salvo en docker-compose.test.yml, donde dos instancias propias se
+    # hablan por HTTP simple dentro de una red Docker aislada (sin TLS entre
+    # contenedores) -- nunca se debe apagar en produccion ni en un .env real.
+    transferencia_exigir_https: bool = True
 
     registraduria_api_key: str = "clave-interna-de-desarrollo"
 

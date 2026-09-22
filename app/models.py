@@ -89,7 +89,11 @@ class Ciudadano(Base):
     # antes de borrar el ciudadano y choca contra esa restriccion. Con passive_deletes=True
     # no la toca: confia en que quien borra el ciudadano ya elimino sus documentos.
     documentos: Mapped[list["Documento"]] = relationship(back_populates="ciudadano", passive_deletes=True)
-    transferencias: Mapped[list["Transferencia"]] = relationship(back_populates="ciudadano")
+    # passive_deletes=True: mismo motivo que auditorias -- la purga fisica (CU-03) borra
+    # al ciudadano pero conserva sus filas de transferencia (ciudadano_id nullable, ON
+    # DELETE SET NULL). Sin esto, SQLAlchemy intentaria nulificarlas el mismo con un
+    # UPDATE de ORM antes del DELETE en vez de dejar que lo haga la FK de Postgres.
+    transferencias: Mapped[list["Transferencia"]] = relationship(back_populates="ciudadano", passive_deletes=True)
     # passive_deletes=True: sin esto, al borrar un ciudadano SQLAlchemy nulifica
     # ciudadano_id en cada Auditoria con un UPDATE de ORM antes del DELETE, y el listener
     # de solo-insercion de Auditoria lo rechaza. Con passive_deletes=True el ORM no toca
@@ -166,7 +170,11 @@ class Transferencia(Base):
     __tablename__ = "transferencia"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    ciudadano_id: Mapped[int] = mapped_column(ForeignKey("ciudadano.id"), index=True)
+    # Nullable a proposito, igual que Auditoria.ciudadano_id: la purga fisica (CU-03,
+    # "Borrado") borra al ciudadano pero conserva esta fila como rastro de que existio y
+    # se traslado (RNF14). ON DELETE SET NULL: sin eso, Postgres rechazaria el borrado
+    # del ciudadano mientras una fila de transferencia lo siga referenciando.
+    ciudadano_id: Mapped[int | None] = mapped_column(ForeignKey("ciudadano.id", ondelete="SET NULL"), index=True)
     operador_destino_id: Mapped[str] = mapped_column(ForeignKey("operador_cache.id"), index=True)
     confirm_api: Mapped[str] = mapped_column(String(500))
     estado: Mapped[EstadoTransferencia] = mapped_column(
@@ -176,7 +184,7 @@ class Transferencia(Base):
     confirmada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     purgar_despues_de: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    ciudadano: Mapped["Ciudadano"] = relationship(back_populates="transferencias")
+    ciudadano: Mapped["Ciudadano | None"] = relationship(back_populates="transferencias")
     operador_destino: Mapped["OperadorCache"] = relationship(back_populates="transferencias")
 
 

@@ -26,10 +26,11 @@ Usa `alembic revision --autogenerate` y valida contra la base real: hay Postgres
 
 `app/config.py`, `app/db.py`, `app/errors.py` · `app/models.py` con las 7 tablas ·
 migraciones aplicadas · `app/interoperabilidad/` (cliente del centralizador, cliente de
-otros operadores, bandeja de salida, recepción de transferencias) ·
+otros operadores, bandeja de salida, envío y recepción de transferencias) ·
 `app/mock/registraduria.py` · `app/identidad/` (registro, correo, seguridad, sesión,
 token, TOTP, dependencias) · `app/documentos/` (almacenamiento S3, detección de tipo,
-rutas, autenticación) · `scripts/limpiar_prueba.py` · `scripts/probar_transferencia.py`.
+rutas, autenticación) · `scripts/limpiar_prueba.py` · `scripts/probar_transferencia.py` ·
+`scripts/probar_envio_transferencia.py` · `scripts/mock_centralizador.py`.
 
 **Los cuatro flujos obligatorios de la entrega están implementados y probados de punta
 a punta contra el sistema real del MinTIC.**
@@ -52,10 +53,106 @@ de origen en `transferCitizenConfirm` es heurística (IP contra el host de
 `transfer_api_url` en `operador_cache`): el ecosistema no tiene autenticación real.
 La descarga de documentos de otro operador (`app/interoperabilidad/operadores.py`) es en
 streaming y aplica el límite de tamaño sobre los bytes que realmente llegan, nunca sobre
-el `Content-Length` que declara el remoto (puede mentir o no venir). **El lado emisor
-(enviar un ciudadano a otro operador) no está implementado**: no hay código que llame
-`unregisterCitizen` + `POST /api/transferCitizen` de un destino, así que hoy nunca se
-crea una fila `transferencia` en estado `ENVIADA` de forma orgánica.
+el `Content-Length` que declara el remoto (puede mentir o no venir).
+
+**CU-03, envío de un ciudadano a otro operador, implementado y probado de punta a
+punta el 2026-09-22** entre dos instancias propias en Linux (ver "Probar en Linux" más
+abajo) — nunca contra el directorio real del MinTIC. `POST /api/v1/perfil/traslado`
+(nuevo, autenticado, sin segundo factor) valida `estado == ACTIVO` y que no haya ya una
+transferencia `ENVIADA`, resuelve el destino por `_id` contra el `operador_cache` que
+ya haya (sin llamar al centralizador en la ruta), marca al ciudadano `EN_TRANSFERENCIA`
+y encola `enviarTransferencia`. Ese manejador de outbox (`app.interoperabilidad.outbox`)
+hace el refresco "a demanda" de verdad, genera enlaces de 24 h, invoca
+`unregisterCitizen`, hace `POST /api/transferCitizen` al destino y marca `ENVIADA`
+(crea la fila `transferencia`). La confirmación (`POST /api/transferCitizenConfirm`,
+que recibe el propio ColCarpeta como emisor) ya estaba construida desde la sesión de
+CU-16: marca `CONFIRMADA` + programa la purga, o recupera con `registerCitizen` si
+`req_status = 0` — CU-03 solo le dio un emisor real. Si el envío mismo no se completa
+(límites, red agotada, directorio sin URL utilizable), `_al_finalizar_envio_transferencia`
+recupera al ciudadano exactamente igual que un `req_status = 0` real; probado (por
+accidente, ver más abajo) end-to-end.
+
+Además, cada ciclo del bucle de fondo hace mantenimiento periódico (cada
+`DIRECTORIO_OPERADORES_REFRESCO_SEGUNDOS`, 900 s por defecto): refresca
+`operador_cache` desde `getOperators`, **reconcilia transferencias `ENVIADA` más viejas
+que `TRANSFER_CONFIRM_TIMEOUT`** sin confirmación (consulta `validateCitizen` en vez de
+dejarlas colgadas para siempre), y **purga físicamente** las `CONFIRMADA` cuyo
+`purgar_despues_de` ya pasó (borra documentos, objetos del bucket y el ciudadano; la
+fila `transferencia` sobrevive como `PURGADA`, con `ciudadano_id` en NULL). La consulta
+exacta de la purga (es el único código del proyecto que destruye datos, y corre contra
+la base real): `estado == CONFIRMADA AND purgar_despues_de IS NOT NULL AND
+purgar_despues_de <= ahora`, las tres condiciones exigidas a la vez
+(`app.interoperabilidad.outbox._purgar_transferencias`), con una relectura bajo
+`FOR UPDATE` antes de borrar nada para no chocar con una confirmación concurrente.
+
+**Purga y reconciliación probadas de punta a punta el 2026-09-22**
+(`scripts/probar_reconciliacion.py`, dentro de `docker-compose.test.yml`): sin esperar
+horas ni manipular el reloj del sistema, se inserta directamente una fila
+`transferencia` `ENVIADA` con `enviada_en` retrocedido en la base más allá de
+`TRANSFER_CONFIRM_TIMEOUT`, y se corre `_reconciliar_transferencias` una sola vez.
+Cubre los tres desenlaces: `validateCitizen` confirma el destino (→ `CONFIRMADA` + purga
+programada, igual que `req_status=1`), `validateCitizen` dice disponible (→ `FALLIDA` +
+`registerCitizen` reencolado, igual que `req_status=0`), y el caso ambiguo (200 pero sin
+nombrar al destino: se queda `ENVIADA`, no se resuelve sola, y queda auditado como
+`transferencia.reconciliacion_ambigua`). Los tres pasaron.
+
+**Tres bugs reales encontrados y corregidos al probar CU-03 de punta a punta
+(2026-09-22), ninguno hipotético:**
+
+1. **`HEAD` sobre un enlace firmado de Supabase responde 403, aunque el mismo enlace
+   responda 200 a `GET`.** `obtener_tamano()` (paso 1 de "Orden de recepción") trataba
+   cualquier `HEAD` fallido como `OperadorNoDisponible` (reintentable indefinidamente):
+   como el chequeo de tamaño es solo una optimización y `descargar()` ya aplica el
+   límite de verdad en streaming, ahora un `HEAD` fallido simplemente devuelve tamaño
+   desconocido (`None`) en vez de bloquear la recepción. Sin este arreglo, **ningún
+   operador cuyo almacenamiento sea Supabase — incluido otro ColCarpeta — podría recibir
+   nunca nada**, porque el emisor firma su propio enlace con su propio Supabase. No se
+   había detectado antes porque las pruebas previas de CU-16 siempre usaban una URL
+   externa real (w3.org), nunca un enlace firmado propio.
+2. **`Transferencia.ciudadano_id` no admitía NULL y no tenía `ON DELETE SET NULL`.** La
+   purga física borra al ciudadano pero debe conservar la fila `transferencia` como
+   rastro (RNF14) — el mismo patrón ya usado en `auditoria`, que aquí faltaba. Sin el
+   arreglo, la purga fallaba con una violación de FK. Corregido con migración
+   `de098854465b` (aplicada a la base real) + `passive_deletes=True` en
+   `Ciudadano.transferencias`.
+3. **Colisión de `email_carpeta` al recibir.** Dos variantes, con desenlaces distintos:
+   - **El mismo ciudadano que ya fue nuestro y vuelve antes de que se cumpla su propia
+     purga diferida (resuelto, 2026-09-22).** Si alguien se trasladó a otro operador y
+     su fila local sigue en `TRASLADADO` (todavía no pasó `PURGE_DELAY_DAYS`), y luego
+     vuelve por una transferencia real, `citizenEmail` trae exactamente la misma
+     dirección de siempre (AD-10: es portable y permanente) — chocaría contra su
+     **propio** registro viejo, no contra el de otra persona. Decisión: ese registro
+     viejo ya no hace falta conservarlo más allá de la purga diferida una vez que su
+     salida quedó `CONFIRMADA` (la fila `transferencia`, que sobrevive a la purga, ya es
+     el rastro permanente — no la fila `ciudadano`), así que se reemplaza de inmediato
+     en vez de obligar a esperar los días que falten. Corregido en dos puntos que hay
+     que tocar juntos: el chequeo de idempotencia de la propia ruta
+     (`app/interoperabilidad/transferencias.py`, `_recibir_transferencia_impl` — sin
+     esto ni siquiera se llega a encolar nada, la ruta descarta la transferencia como
+     "duplicada" antes de que la bandeja de salida la vea) y el paso 2 del manejador de
+     outbox (`_recibir_transferencia`, que borra el ciudadano/documentos/objetos viejos,
+     dejando auditoría `transferencia.registro_anterior_reemplazado`, antes de crear la
+     fila nueva). Solo aplica al estado `TRASLADADO` específicamente: cualquier otro
+     estado ya existente para esa cédula (`ACTIVO`, `EN_TRANSFERENCIA`,
+     `PENDIENTE_VERIFICACION`, `PENDIENTE_CENTRALIZADOR`) sigue tratándose como conflicto
+     real y no se toca. Probado de punta a punta con
+     `scripts/probar_regreso_antes_de_purga.py`: documento y objeto S3 viejos borrados,
+     documento nuevo guardado, ciudadano llega a `ACTIVO` (no se queda colgado en
+     `TRASLADADO`).
+   - **Dos ciudadanos *distintos*, de operadores de origen distintos, que por
+     coincidencia generan el mismo `citizenEmail` (mismo nombre y año) hacia el mismo
+     destino — sigue sin manejarse.** La inserción viola la unicidad y
+     `_recibir_transferencia` la trata como rechazo de negocio genérico (descarta al
+     ciudadano recibido, responde `req_status = 0`): no se cae el proceso, pero tampoco
+     hay aviso claro de que la causa fue una colisión de correo y no un rechazo
+     legítimo. Sigue en Pendiente — es un caso real distinto del anterior (dos
+     identidades distintas, no la misma persona regresando) y no tiene una resolución
+     tan directa (no hay un registro "propio" que reemplazar).
+
+`TRANSFERENCIA_EXIGIR_HTTPS` (nueva variable, `true` por defecto): CU-03 rechaza un
+destino cuyo `transferAPIURL` no sea `https://`. Se puede apagar solo para pruebas
+locales entre instancias propias sin TLS (`docker-compose.test.yml`) — **nunca en
+`.env` real ni en Railway**.
 
 **Bandeja de salida: recuperación de filas colgadas.** Una fila que quedó en
 `EN_PROCESO` (el proceso que la tomó murió, se colgó, o hubo un redespliegue a mitad de
@@ -97,9 +194,21 @@ asumir que está resuelto.
 `documento.firma_valida` queda siempre en nulo. Requiere `pyHanko` para validar firmas
 PAdES dentro del PDF.
 
-**Envío de transferencias** (lado emisor de CU-16, ver arriba), la purga física periódica
-de transferencias `CONFIRMADA` (hoy solo se agenda `purgar_despues_de`, nada la ejecuta),
-notificaciones más allá del correo de registro, consola de administración.
+**Colisión de `email_carpeta` entre dos ciudadanos distintos al recibir** (ver arriba,
+bug 3, segunda variante): sin deduplicación ni aviso especial cuando dos operadores de
+origen distintos generan el mismo `citizenEmail` para el mismo destino. La variante del
+mismo ciudadano regresando antes de su propia purga sí está resuelta.
+
+**Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio
+de operadores"): hoy CU-03 simplemente rechaza el envío en ese caso (`ValueError`, no
+reintentable) en vez de repartir por correo electrónico.
+
+`GET /api/v1/perfil` (documentado en "Contrato de la API propia", "Datos del ciudadano
+y estado de su carpeta") **no existe todavía**: no lo pidió esta entrega, pero significa
+que hoy no hay forma de consultar el estado de la carpeta por API — las pruebas de CU-03
+verifican el estado consultando la base de datos directamente.
+
+Notificaciones más allá del correo de registro, consola de administración.
 
 No registrar `registerTransferEndPoint` todavía: ver "Prohibido".
 
@@ -125,15 +234,20 @@ app/
   models.py                    las 7 tablas
   interoperabilidad/
     govcarpeta.py              ÚNICO cliente del centralizador
-    operadores.py              cliente de otros operadores (CU-16: descarga, confirmAPI)
-    outbox.py                  proceso de bandeja de salida
-    transferencias.py          POST /api/transferCitizen y /transferCitizenConfirm
+    operadores.py              cliente de otros operadores (descarga, confirmAPI, envío)
+    outbox.py                  bandeja de salida + mantenimiento periódico (directorio,
+                                reconciliación, purga)
+    transferencias.py          router (/api, CU-16) + router_propio (/api/v1/perfil, CU-03)
   mock/registraduria.py        Registraduría simulada
 alembic/versions/              migraciones
 docs/especificacion.md         la especificación completa
 scripts/probar_govcarpeta.py   prueba de humo contra la API real
 scripts/limpiar_prueba.py      borra toda huella local y en el centralizador de una cedula
-scripts/probar_transferencia.py  simula un operador de origen enviando CU-16
+scripts/probar_transferencia.py  simula un operador de origen enviando CU-16 a esta app
+scripts/probar_envio_transferencia.py  CU-03+CU-16 entre dos instancias propias (ver mas abajo)
+scripts/probar_reconciliacion.py  _reconciliar_transferencias en aislamiento, sin esperar horas
+scripts/probar_regreso_antes_de_purga.py  el mismo ciudadano vuelve antes de su propia purga
+scripts/mock_centralizador.py  centralizador falso en memoria, solo para esas pruebas
 Dockerfile                     imagen de la app; la usa Railway Y docker-compose.test.yml
 docker-compose.test.yml        solo para probar en Linux en esta maquina (Docker Desktop),
                                 nunca para desplegar -- ver "Probar en Linux" mas abajo
@@ -271,6 +385,49 @@ Windows -- no es una base de pruebas aparte. Se probó el 2026-09-21 con la céd
 1234567890: la descarga del documento, `validateCitizen` y `confirmAPI` respondieron
 todos en menos de un segundo dentro del contenedor. Ver la nota sobre el cuelgue de
 Windows más arriba para lo que esto sí y no demuestra.
+
+### CU-03 + CU-16 entre dos instancias propias
+
+Mismo archivo, servicios distintos: `app-a` (emisor) y `app-b` (receptor), cada uno con
+su **propia base de datos Postgres local y desechable** (`postgres-a`/`postgres-b`, no
+tocan Supabase) y un **centralizador falso en memoria** (`mock-centralizador`,
+`scripts/mock_centralizador.py`) que responde `validateCitizen`/`registerCitizen`/
+`unregisterCitizen`/`getOperators` sin llegar nunca al MinTIC real. Sí comparten el
+bucket S3 real (claves de objeto aleatorias, sin riesgo de choque). Como no hay TLS
+entre contenedores, estas dos instancias corren con `TRANSFERENCIA_EXIGIR_HTTPS=false`
+-- variable que en cualquier otro entorno debe quedar en `true`.
+
+```bash
+docker compose -f docker-compose.test.yml up --build -d postgres-a postgres-b mock-centralizador
+docker compose -f docker-compose.test.yml up -d app-a app-b   # corren "alembic upgrade head" solos
+docker compose -f docker-compose.test.yml run --rm prueba-envio             # CU-03 + CU-16 normal
+docker compose -f docker-compose.test.yml run --rm prueba-reconciliacion   # sin esperar horas
+docker compose -f docker-compose.test.yml run --rm prueba-regreso          # el mismo ciudadano vuelve
+docker compose -f docker-compose.test.yml down -v             # -v: tambien borra postgres-a/b
+```
+
+`scripts/probar_envio_transferencia.py` registra un ciudadano de prueba en `app-a`
+(cédula ficticia -- es seguro, nunca toca el MinTIC real), sube un documento, solicita
+el traslado a `test-operador-b`, y verifica en las dos bases de datos (consulta directa
+por SQL: `GET /api/v1/perfil` todavía no existe) que la transferencia quedó `CONFIRMADA`,
+el ciudadano llegó `ACTIVO` a `app-b` con su documento, y `app-a` quedó `TRASLADADO`.
+Probado de punta a punta el 2026-09-22, varias veces, de forma reproducible.
+
+`scripts/probar_reconciliacion.py` inserta una `transferencia` `ENVIADA` con
+`enviada_en` retrocedido en la base (no espera `TRANSFER_CONFIRM_TIMEOUT` de verdad) y
+corre `_reconciliar_transferencias` una sola vez, cubriendo sus tres desenlaces
+(confirmada, recuperada, ambigua). No depende de `app-a`/`app-b` como servidores vivos
+-- solo de `postgres-a` y `mock-centralizador` -- para no competir con su propio outbox
+por las mismas filas.
+
+`scripts/probar_regreso_antes_de_purga.py` siembra directamente un ciudadano
+`TRASLADADO` (con un documento y un objeto S3 real) y le envía una transferencia
+entrante con la misma cédula y el mismo `email_carpeta`, contra `app-a` viva. Verifica
+que el registro viejo (fila y objeto S3) se reemplaza y que el ciudadano llega a
+`ACTIVO` en vez de quedarse colgado en `TRASLADADO`.
+
+Estas tres pruebas, en conjunto, encontraron y corrigieron los bugs reales descritos
+arriba en "Estado actual".
 
 ## Convenciones
 
