@@ -22,7 +22,11 @@ de negocio y no se reintenta: la entrada pasa a FALLIDO de una vez.
 
 Operaciones registradas en `MANEJADORES`: `registerCitizen`, `unregisterCitizen` y
 `authenticateDocument` (centralizador); `receiveTransferCitizen` y
-`confirmarTransferencia` (CU-16, recepcion); `enviarTransferencia` (CU-03, envio).
+`confirmarTransferencia` (CU-16, recepcion); `enviarTransferencia` (CU-03, envio);
+`validarFirma` (CU-09, validacion de firma digital -- la unica que no habla con el
+centralizador ni con otro operador: es una validacion puramente local, encolada solo
+porque consume procesador y AD-05 exige que eso corra en segundo plano, no en la
+peticion del ciudadano).
 
 Este mismo bucle de fondo (`ejecutar_bandeja_de_salida`) tambien hace mantenimiento
 periodico cada `DIRECTORIO_OPERADORES_REFRESCO_SEGUNDOS` (15 min por defecto), sin
@@ -79,7 +83,8 @@ Manejador = Callable[[GovCarpeta, dict], Awaitable[Any]]
 
 
 class DocumentoEliminado(Exception):
-    """CU-11, E5: el documento se elimino entre la solicitud y el envio.
+    """El documento se elimino entre la solicitud y el envio: CU-11, E5
+    (`authenticateDocument`) y CU-09 (`validarFirma`, mismo motivo).
 
     No hay un estado CANCELADO en `outbox.estado` (ni consola de administracion que lo
     distinga de FALLIDO todavia), asi que se trata como un fallo de negocio: no se
@@ -138,6 +143,44 @@ async def _autenticar_documento(gov: GovCarpeta, payload: dict) -> str:
         await session.commit()
 
     return await gov.autenticar_documento(cedula=payload["cedula"], url_documento=url, titulo=payload["titulo"])
+
+
+async def _validar_firma(gov: GovCarpeta, payload: dict) -> dict | None:
+    """CU-09: descarga el objeto del bucket y valida su firma digital, si trae una.
+
+    No usa `gov` (no habla con el centralizador ni con otro operador -- la validacion
+    es puramente local, ver app.documentos.firma): se mantiene el parametro para no
+    complicar la firma comun de `Manejador`. Corre en segundo plano y no en la peticion
+    del ciudadano porque la validacion criptografica consume procesador (AD-05).
+
+    Devuelve None cuando no hay nada que aplicar (el archivo no es un PDF, o es un PDF
+    sin firma) -- distinto de un resultado real, que siempre trae `firma_valida` con
+    valor concreto (`True` o `False`, nunca None dentro del dict)."""
+    from app.db import SessionLocal
+    from app.documentos.almacenamiento import descargar_objeto
+    from app.documentos.firma import validar_firma_pdf
+
+    documento_id = uuid.UUID(payload["documento_id"])
+    async with SessionLocal() as session:
+        documento = await session.get(Documento, documento_id)
+        if documento is None:
+            raise DocumentoEliminado(f"el documento {documento_id} ya no existe")
+        s3_key = documento.s3_key
+        content_type = documento.content_type
+
+    if content_type != "application/pdf":
+        return None  # CU-09 es PAdES: solo un PDF puede traer esta firma
+
+    contenido = descargar_objeto(clave=s3_key)
+    resultado = await validar_firma_pdf(contenido)
+    if resultado is None:
+        return None
+
+    return {
+        "firma_valida": resultado.firma_valida,
+        "firmante": resultado.firmante,
+        "fecha_firma": resultado.fecha_firma.isoformat() if resultado.fecha_firma else None,
+    }
 
 
 def _parsear_fecha(valor: Any) -> datetime | None:
@@ -526,6 +569,7 @@ MANEJADORES: dict[str, Manejador] = {
     "receiveTransferCitizen": _recibir_transferencia,
     "confirmarTransferencia": _confirmar_transferencia_operador,
     "enviarTransferencia": _enviar_transferencia,
+    "validarFirma": _validar_firma,
 }
 
 
@@ -603,6 +647,44 @@ async def _actualizar_autenticacion_documento(
         documento.estado_autenticacion = EstadoAutenticacionDocumento.RECHAZADO
         documento.respuesta_centralizador = error
     documento.autenticacion_actualizada_en = datetime.now(timezone.utc)
+
+
+async def _aplicar_resultado_firma(
+    session: AsyncSession, payload: dict, resultado: ResultadoOperacion, respuesta: Any, error: str | None
+) -> None:
+    """CU-09: aplica el resultado de `_validar_firma` al documento.
+
+    Una firma invalida NO es un rechazo: `_validar_firma` nunca levanta una excepcion
+    de negocio por eso, asi que este efecto solo corre con `resultado == EXITO`. Si el
+    documento no traia firma (o dejo de existir mientras tanto), `respuesta` es `None`
+    y no hay nada que aplicar -- `firma_valida` se queda como estaba (`NULL`, "sin
+    firma"), nunca se fuerza a `False`.
+    """
+    if resultado != ResultadoOperacion.EXITO or respuesta is None:
+        return
+
+    documento = await session.get(Documento, uuid.UUID(payload["documento_id"]))
+    if documento is None:
+        return
+
+    documento.firma_valida = respuesta["firma_valida"]
+    documento.firma_firmante = respuesta["firmante"]
+    documento.firma_fecha = _parsear_fecha(respuesta["fecha_firma"])
+
+    session.add(
+        Auditoria(
+            actor="sistema",
+            accion="documento.firma_validada",
+            recurso=str(documento.id),
+            ciudadano_id=documento.ciudadano_id,
+            correlation_id=payload.get("correlation_id"),
+            detalle={
+                "firma_valida": respuesta["firma_valida"],
+                "firmante": respuesta["firmante"],
+                "fecha_firma": respuesta["fecha_firma"],
+            },
+        )
+    )
 
 
 async def _emitir_token_primer_acceso(session: AsyncSession, ciudadano: Ciudadano, payload: dict) -> None:
@@ -777,6 +859,7 @@ EFECTOS_AL_FINALIZAR: dict[str, EfectoAlFinalizar] = {
     "authenticateDocument": _actualizar_autenticacion_documento,
     "receiveTransferCitizen": _al_finalizar_recepcion_transferencia,
     "enviarTransferencia": _al_finalizar_envio_transferencia,
+    "validarFirma": _aplicar_resultado_firma,
 }
 
 

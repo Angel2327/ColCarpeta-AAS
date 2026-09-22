@@ -5,11 +5,14 @@ propia" (documentos), "Flujos alternos y de excepcion" (CU-05, A1-A2, E1-E5),
 "Parametros y limites" (cuota, tamano, tipos, paginacion) y "Seguridad y manejo de
 documentos" (enlaces firmados, claves de objeto aleatorias).
 
-A1 (firma digital) no se dispara desde este endpoint: el formulario de carga
-(`archivo, titulo, tipo, entidad_emisora, fecha_emision`) no trae un campo de firma
-independiente, a diferencia del documento de identidad de CU-01 (que la Registraduria
-entrega junto con su propio `firma`). `firma_valida` queda en NULL para lo que se sube
-aqui, listo para cuando exista un flujo que si aporte una firma que validar.
+A1 (firma digital, CU-09): si el archivo es un PDF, se encola `validarFirma` en la misma
+transaccion que crea el documento -- la validacion criptografica corre en segundo plano
+(`app.interoperabilidad.outbox`, AD-05: consume procesador, no va en la peticion del
+ciudadano), nunca contra un archivo `image/jpeg` o `image/png` (no pueden traer una
+firma PAdES). `firma_valida` queda en NULL hasta que la bandeja de salida lo resuelva
+-- o para siempre, si el PDF no trae ninguna firma embebida. Ver app.documentos.firma
+para el detalle de que se valida (y que no: la cadena de confianza contra una autoridad
+certificadora real, que este proyecto no tiene).
 
 A2 (sustitucion, CU-10) es explicita, no inferida: el formulario acepta `sustituye_a` con
 el id del documento temporal a reemplazar. Sin ese campo, toda carga crea un documento
@@ -45,7 +48,7 @@ import uuid
 from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -78,7 +81,24 @@ class RespuestaDocumento(BaseModel):
     entidad_emisora: str | None
     fecha_emision: date | None
     certificado: bool
-    firma_valida: bool | None
+    # CU-09: sin valor mientras no hay firma que validar (el archivo no es un PDF, el
+    # PDF no trae firma embebida, o la validacion todavia no corrio en segundo plano) --
+    # eso es distinto de `false`, que es una firma que sí se validó y no pasó. `firmante`
+    # y `firma_fecha` son lo que la propia firma declara (nunca verificado contra una
+    # autoridad certificadora real: ver app.documentos.firma) y solo tienen valor junto
+    # con `firma_valida`. `certificado` es una fuente de procedencia distinta e
+    # independiente (CU-13: lo deposité una entidad emisora autenticada, no el
+    # ciudadano) -- un documento puede tener cualquier combinación de las dos.
+    firma_valida: bool | None = Field(
+        description=(
+            "Sin valor si el documento no tiene una firma digital que validar, o si la "
+            "validación todavía no terminó. `false` significa que sí se validó una firma "
+            "y no es válida (no impide conservar el documento). No implica que la "
+            "identidad del firmante esté verificada contra una autoridad certificadora."
+        )
+    )
+    firma_firmante: str | None = Field(description="Firmante declarado por la propia firma, sin valor si `firma_valida` no lo tiene.")
+    firma_fecha: datetime | None = Field(description="Fecha de firma declarada por la propia firma, sin valor si `firma_valida` no lo tiene.")
     estado_autenticacion: EstadoAutenticacionDocumento
     estado: EstadoDocumento
     # CU-10: el documento que este reemplazo, si llego por sustitucion explicita. Se
@@ -149,6 +169,8 @@ def _a_respuesta(d: Documento) -> RespuestaDocumento:
         fecha_emision=d.fecha_emision.date() if d.fecha_emision else None,
         certificado=d.certificado,
         firma_valida=d.firma_valida,
+        firma_firmante=d.firma_firmante,
+        firma_fecha=d.firma_fecha,
         estado_autenticacion=d.estado_autenticacion,
         estado=d.estado,
         sustituye_a=d.sustituye_a_id,
@@ -182,6 +204,16 @@ async def cargar_documento(
     el id de un documento propio no certificado, ese documento se reemplaza por el
     nuevo. Devuelve 201 con los metadatos del documento creado, o 200 si el archivo ya
     se había cargado antes (mismo contenido) y no se crea uno nuevo.
+
+    Si el archivo es un PDF con una firma digital embebida, su validez criptográfica
+    se revisa poco después de la carga y queda en `firma_valida`; en la respuesta
+    inmediata todavía puede aparecer sin valor. `firma_valida` sin valor significa que
+    el documento no tiene firma que validar (o que la validación todavía no terminó);
+    `false` significa que sí se validó y no es una firma válida. Una firma inválida no
+    impide guardar el documento. Esa validación no comprueba la identidad del
+    firmante contra ninguna autoridad certificadora: solo que el contenido no cambió
+    desde que se firmó y que la firma en sí es criptográficamente correcta;
+    `firma_firmante` y `firma_fecha` son los datos que la propia firma declara.
 
     Puede rechazar la carga con 413 si el archivo excede el tamaño máximo, 415 si el
     tipo de archivo no está permitido, 409 si la cuota de almacenamiento está agotada
@@ -286,6 +318,17 @@ async def cargar_documento(
         # cuota (arriba), pero sigue siendo consultable por su id.
         if anterior is not None:
             anterior.estado = EstadoDocumento.REEMPLAZADO
+
+        # A1/CU-09: solo un PDF puede traer una firma PAdES que valer la pena revisar.
+        # La validacion misma corre en segundo plano (AD-05) -- ver app.interoperabilidad.
+        # outbox._validar_firma.
+        if content_type == "application/pdf":
+            session.add(
+                Outbox(
+                    operacion="validarFirma",
+                    payload={"documento_id": str(nuevo_id), "correlation_id": _correlation_id(request)},
+                )
+            )
 
         session.add(
             Auditoria(

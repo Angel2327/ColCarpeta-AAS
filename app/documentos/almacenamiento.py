@@ -67,3 +67,14 @@ def generar_url_descarga(*, clave: str, ttl_segundos: int) -> str:
         )
     except (BotoCoreError, ClientError) as exc:
         raise FalloAlmacenamiento(str(exc)) from exc
+
+
+def descargar_objeto(*, clave: str) -> bytes:
+    """Trae el objeto de vuelta al proceso (CU-09: la bandeja de salida necesita los
+    bytes reales para validar la firma, no un enlace -- a diferencia de CU-11, que solo
+    le da al centralizador un enlace firmado para que lo descargue el mismo)."""
+    cfg = get_config()
+    try:
+        return _cliente().get_object(Bucket=cfg.s3_bucket, Key=clave)["Body"].read()
+    except (BotoCoreError, ClientError) as exc:
+        raise FalloAlmacenamiento(str(exc)) from exc

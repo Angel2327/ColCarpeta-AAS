@@ -12,9 +12,13 @@ existe es la tabla `entidad_emisora` y su credencial. No hay ninguna ruta públi
 cree una entidad — la única forma de darla de alta es `scripts/alta_entidad_emisora.py`,
 que exige acceso directo a la base de datos, fuera de la API.
 
-CU-09 (validación de firma digital) sigue sin implementar: `firma_valida` queda en NULL
-para lo que llega por esta vía, igual que en CU-05. Este es el punto donde encajaría esa
-validación cuando exista pyHanko — no se inventa aquí un resultado falso.
+CU-09 (validación de firma digital): si el archivo depositado es un PDF, se encola
+`validarFirma` igual que en CU-05 -- corre en segundo plano
+(`app.interoperabilidad.outbox`), nunca en esta petición. `certificado = true` respalda
+`entidad_emisora` (viene de la credencial autenticada, no de lo declarado); una firma
+válida además respalda que el contenido no cambió desde que se firmó y quién dice
+haber firmado -- son dos fuentes de respaldo independientes, un documento puede tener
+cualquier combinación de las dos.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ import uuid
 from datetime import date, datetime, time, timezone
 
 from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.config import get_config
@@ -35,7 +39,16 @@ from app.documentos.router import resolver_sustitucion
 from app.documentos.tipos import TIPOS_PERMITIDOS, detectar_content_type
 from app.errors import ErrorDeNegocio
 from app.identidad.token_acceso import hash_token
-from app.models import Auditoria, Ciudadano, Documento, EntidadEmisora, EstadoCiudadano, EstadoDocumento, EstadoEntidadEmisora
+from app.models import (
+    Auditoria,
+    Ciudadano,
+    Documento,
+    EntidadEmisora,
+    EstadoCiudadano,
+    EstadoDocumento,
+    EstadoEntidadEmisora,
+    Outbox,
+)
 
 router = APIRouter(prefix="/api/v1/entidades", tags=["entidades emisoras"])
 
@@ -47,7 +60,16 @@ class RespuestaDocumentoDepositado(BaseModel):
     entidad_emisora: str
     fecha_emision: date | None
     certificado: bool
-    firma_valida: bool | None
+    firma_valida: bool | None = Field(
+        description=(
+            "Sin valor si el documento no tiene una firma digital que validar, o si la "
+            "validación todavía no terminó. `false` significa que sí se validó una firma "
+            "y no es válida (no impide conservar el documento). No implica que la "
+            "identidad del firmante esté verificada contra una autoridad certificadora."
+        )
+    )
+    firma_firmante: str | None = Field(description="Firmante declarado por la propia firma, sin valor si `firma_valida` no lo tiene.")
+    firma_fecha: datetime | None = Field(description="Fecha de firma declarada por la propia firma, sin valor si `firma_valida` no lo tiene.")
     sustituye_a: uuid.UUID | None
     tamano_bytes: int
     creado_en: datetime
@@ -97,6 +119,13 @@ async def depositar_documento(
     solicitud (CU-08). Si `sustituye_a` incluye el id de un documento temporal propio
     del ciudadano, ese documento pasa a reemplazado, igual que en la carga propia
     (CU-10), sin perder su historia.
+
+    Si el archivo es un PDF con una firma digital embebida, su validez criptográfica
+    se revisa poco después del depósito y queda en `firma_valida`; en la respuesta
+    inmediata todavía puede aparecer sin valor. Esa validación no comprueba la
+    identidad del firmante contra ninguna autoridad certificadora: solo que el
+    contenido no cambió desde que se firmó y que la firma en sí es criptográficamente
+    correcta.
 
     Devuelve 401 si la clave de API falta o es inválida, 404 si la cédula no
     corresponde a un ciudadano afiliado y activo en ColCarpeta, 413 si el archivo
@@ -154,6 +183,17 @@ async def depositar_documento(
         if anterior is not None:
             anterior.estado = EstadoDocumento.REEMPLAZADO
 
+        # A1/CU-09: igual que en la carga propia del ciudadano -- solo un PDF puede
+        # traer una firma que valga la pena revisar, y la validacion corre en segundo
+        # plano (AD-05).
+        if content_type == "application/pdf":
+            session.add(
+                Outbox(
+                    operacion="validarFirma",
+                    payload={"documento_id": str(nuevo_id), "correlation_id": _correlation_id(request)},
+                )
+            )
+
         from app.notificaciones.correo import enviar_correo
 
         await enviar_correo(
@@ -200,6 +240,8 @@ async def depositar_documento(
         fecha_emision=nuevo.fecha_emision.date() if nuevo.fecha_emision else None,
         certificado=nuevo.certificado,
         firma_valida=nuevo.firma_valida,
+        firma_firmante=nuevo.firma_firmante,
+        firma_fecha=nuevo.firma_fecha,
         sustituye_a=nuevo.sustituye_a_id,
         tamano_bytes=nuevo.tamano_bytes,
         creado_en=nuevo.creado_en,

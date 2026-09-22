@@ -368,13 +368,34 @@ Cada generación de un enlace firmado se registra en `auditoria` con el document
 | Segundo factor | TOTP, exigido en operaciones sensibles |
 | Autorizaciones | Por documento y por operación, revocables, registradas en `auditoria` |
 
+### Validación de firma digital (CU-09)
+
+Se valida la integridad criptográfica de la firma digital embebida en un PDF (PAdES), con `pyHanko`: que el contenido no cambió después de firmarse, que la firma cubre el archivo completo y no solo una parte, y que la firma en sí es criptográficamente correcta contra la llave pública del certificado que dice haber firmado. El resultado se guarda en `documento.firma_valida`, junto con `documento.firma_firmante` (el sujeto del certificado, tal como el certificado lo declara) y `documento.firma_fecha` (la fecha de firma que la propia firma reporta).
+
+**No se valida la cadena de confianza del certificado contra ninguna autoridad certificadora.** En Colombia eso exige el almacén de confianza de las entidades acreditadas por la ONAC, que este proyecto no tiene. Afirmarlo sin tenerlo simularía una garantía que no existe, así que la validación se hace deliberadamente sin ninguna raíz de confianza: el resultado responde "¿este documento cambió después de firmarse, y quién dice haber firmado?", nunca "¿la identidad del firmante está verificada por una autoridad reconocida?". Esta limitación es intencional y permanente mientras el proyecto no incorpore ese almacén de confianza — no es una limitación temporal a resolver más adelante en esta entrega.
+
+`firma_valida` sin valor (`NULL`) significa que no hay firma que validar (el archivo no es un PDF, o el PDF no trae ninguna firma embebida) o que la validación todavía no corrió; `false` significa que sí se validó una firma y no es válida. Esa distinción es deliberada: no son el mismo caso, y la API nunca las confunde. **Una firma inválida no rechaza el documento**: se guarda igual, con el resultado visible.
+
+Por AD-05, la validación corre en el proceso de segundo plano (bandeja de salida) y no en la petición del ciudadano ni de la entidad emisora: consume procesador, y RNF7 fija un objetivo de tiempo de respuesta para las operaciones interactivas.
+
+Se ejercita en CU-05 (carga propia del ciudadano) y en CU-13 (depósito por una entidad emisora) — ver "Relaciones" en el inventario de casos de uso. **No se ejercita todavía en CU-16** (recepción de un ciudadano transferido desde otro operador): los documentos que llegan por esa vía quedan con `firma_valida` sin valor, aunque traigan una firma real. Es una extensión pendiente, no una limitación de diseño: el mismo `app.documentos.firma` serviría, solo falta encolar la validación desde `_recibir_transferencia`.
+
+### Procedencia de los metadatos de un documento
+
+`entidad_emisora`, `fecha_emision` y `tipo` los declara quien carga el documento (el ciudadano en CU-05, o la entidad emisora en CU-13) sin que el sistema los verifique por sí solo. Lo que sí puede respaldar esa información, de forma independiente entre sí, son dos hechos verificables que la API expone:
+
+- `documento.certificado = true`: la entidad emisora que depositó el documento (CU-13) está autenticada, y `entidad_emisora` viene de su credencial, no de un valor declarado en la petición.
+- `documento.firma_valida = true`: el contenido no cambió desde que se firmó, y `firma_firmante`/`firma_fecha` son lo que la propia firma declara.
+
+Un documento puede tener cualquier combinación de las dos, o ninguna. El backend expone estos datos tal cual; decidir cómo presentarle esa distinción al ciudadano es decisión del portal, no de esta API.
+
 ### Endpoints de transferencia
 
 El formato acordado entre operadores no define autenticación. Los controles aplicados son propios y no dependen del otro operador.
 
 - Una confirmación se procesa solo si la cédula está en estado `ENVIADA` y el origen corresponde al destino registrado de esa transferencia.
 - Las peticiones entrantes tienen límite de tamaño total, límite de cantidad de documentos y límite de tasa por origen.
-- Los documentos recibidos entran en cuarentena hasta validar su firma.
+- Los documentos recibidos entran en cuarentena hasta validar su firma. **Pendiente**: CU-09 todavía no está enganchado en este camino (ver "Validación de firma digital" arriba); hoy `firma_valida` queda sin valor para todo lo que llega por transferencia, sin importar si el archivo trae una firma real.
 - Toda petición entrante, aceptada o rechazada, queda en `auditoria`.
 
 ### Borrado
@@ -541,7 +562,7 @@ Cada petición recibe un identificador de correlación que se propaga a las llam
 | Flujo 2, inicio de sesión (CU-02) | Hecho |
 | Flujo 3, carga de documentos (CU-05) | Hecho |
 | Flujo 4, autenticación ante GovCarpeta (CU-11) | Hecho y probado contra el centralizador real |
-| Validación de firma digital (CU-09) | Sin implementar; requiere validar firmas PAdES en el PDF |
+| Validación de firma digital (CU-09) | Hecho en CU-05 y CU-13 (ver "Validación de firma digital" arriba); pendiente en CU-16 |
 | Publicación de endpoints de transferencia | Pendiente, condicionada a que las rutas respondan |
 | Transferencia entre operadores | Diseñada, sin implementar |
 | Notificaciones | Alcance reducido al correo de registro |
@@ -1031,6 +1052,8 @@ El estado `PENDIENTE_CENTRALIZADOR` es normal y esperado: la confirmación ante 
   "fecha_emision": "2025-12-10",
   "certificado": false,
   "firma_valida": null,
+  "firma_firmante": null,
+  "firma_fecha": null,
   "estado_autenticacion": "NO_SOLICITADA",
   "tamano_bytes": 184320,
   "hash_sha256": "...",

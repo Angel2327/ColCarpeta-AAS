@@ -17,6 +17,13 @@ from app.config import get_config
 # de terceros) y solo la jerarquia propia ("colcarpeta.*") baja a INFO.
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("colcarpeta").setLevel(logging.INFO)
+# CU-09 deliberadamente valida firmas sin ninguna raiz de confianza (ver
+# app.documentos.firma): pyHanko registra eso como WARNING en cada validacion
+# ("no se pudo construir una ruta de validacion"), pero para nosotros no es una
+# anomalia, es el estado permanente y esperado del sistema. Sin esto, cada documento
+# firmado que se carga o se deposita llenaria los logs con un warning que no dice nada
+# nuevo y ahogaria los que si importan.
+logging.getLogger("pyhanko").setLevel(logging.ERROR)
 from app.errors import (
     ErrorDeNegocio,
     manejar_error_de_negocio,

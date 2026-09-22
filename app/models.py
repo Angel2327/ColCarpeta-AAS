@@ -164,7 +164,16 @@ class Documento(Base):
     # cambio estado_autenticacion por ultima vez.
     respuesta_centralizador: Mapped[str | None] = mapped_column(Text)
     autenticacion_actualizada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # CU-09: NULL mientras no se ha validado o no hay firma que validar (sin firma
+    # embebida, o archivo que no es un PDF interpretable) -- distinto de `False`, que es
+    # un resultado real ("se valido y no paso"). Ver app.documentos.firma. `firmante` y
+    # `firma_fecha` solo tienen valor cuando `firma_valida` no es NULL: son lo que la
+    # propia firma declara (el sujeto del certificado, la fecha reportada), nunca
+    # verificado contra una autoridad certificadora real -- ver ese modulo para el
+    # porque.
     firma_valida: Mapped[bool | None] = mapped_column(Boolean)
+    firma_firmante: Mapped[str | None] = mapped_column(String(255))
+    firma_fecha: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # ACTIVO por defecto. CU-10 pone REEMPLAZADO en el documento viejo al sustituirlo (en
     # vez de borrarlo, para no perder su historia); CU-08 pone ELIMINADO al borrarlo a
     # solicitud del ciudadano. server_default: la tabla ya tenia filas antes de esta

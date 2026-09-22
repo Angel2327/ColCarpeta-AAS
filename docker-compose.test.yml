@@ -234,3 +234,19 @@ services:
     command:
       - --base-url=http://app-a:8000
       - --database-url=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+
+  # scripts/probar_firma_digital.py: CU-09 (validacion de firma digital), sobre CU-05 y
+  # CU-13. Genera con pyHanko un PDF firmado, uno firmado y luego alterado, y uno sin
+  # firma; carga los tres y espera a que la bandeja de salida de app-a los valide
+  # (corre en segundo plano, AD-05) antes de verificar firma_valida/firma_firmante/
+  # firma_fecha. No necesita el .env real: no toca S3 fuera de lo que ya hace app-a.
+  prueba-firma-digital:
+    build: .
+    depends_on:
+      - app-a
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+    entrypoint: ["python", "scripts/probar_firma_digital.py"]
+    command:
+      - --base-url=http://app-a:8000
+      - --database-url=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a

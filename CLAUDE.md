@@ -30,12 +30,13 @@ Usa `alembic revision --autogenerate` y valida contra la base real: hay Postgres
 bandeja de salida, envío y recepción de transferencias) · `app/mock/registraduria.py` ·
 `app/identidad/` (registro, correo, seguridad, sesión, token, TOTP, dependencias,
 perfil) · `app/documentos/` (almacenamiento S3, detección de tipo, rutas, autenticación,
-búsqueda, eliminación y sustitución de documentos, depósito por entidad emisora) ·
-`app/notificaciones/` (envío simulado y centro de notificaciones, CU-17) ·
-`scripts/limpiar_prueba.py` · `scripts/probar_transferencia.py` ·
-`scripts/probar_envio_transferencia.py` · `scripts/mock_centralizador.py` ·
-`scripts/probar_carpeta_completa.py` · `scripts/alta_entidad_emisora.py` ·
-`scripts/probar_colision_email.py`.
+búsqueda, eliminación y sustitución de documentos, depósito por entidad emisora,
+validación de firma digital con pyHanko) · `app/notificaciones/` (envío simulado y
+centro de notificaciones, CU-17) · `scripts/limpiar_prueba.py` ·
+`scripts/probar_transferencia.py` · `scripts/probar_envio_transferencia.py` ·
+`scripts/mock_centralizador.py` · `scripts/probar_carpeta_completa.py` ·
+`scripts/alta_entidad_emisora.py` · `scripts/probar_colision_email.py` ·
+`scripts/probar_firma_digital.py`.
 
 **Los cuatro flujos obligatorios de la entrega están implementados y probados de punta
 a punta contra el sistema real del MinTIC.**
@@ -339,8 +340,8 @@ corresponda a un ciudadano `ACTIVO` (404 si no), y crea el documento con
 igual que la carga propia del ciudadano (CU-10), reutilizando la misma validación
 (`resolver_sustitucion`, extraída de `documentos/router.py` para compartirla entre los
 dos módulos). El ciudadano recibe notificación por el centro de CU-17. CU-09
-(validación de firma) sigue sin implementar: `firma_valida` queda en NULL para lo que
-llega por esta vía también, sin inventar un resultado.
+(validación de firma, ver más abajo) se ejecuta igual que en CU-05 si el archivo
+depositado es un PDF.
 
 **Revocación y reactivación de una entidad emisora, agregadas el 2026-09-22.**
 `EntidadEmisora.estado` (`ACTIVA` | `REVOCADA`) se agregó específicamente porque antes
@@ -365,11 +366,82 @@ cambios sin tocar `email_carpeta`. Al final prueba también `_purgar_documentos`
 aislamiento (retrocede `purgar_despues_de` en la base, sin esperar `PURGE_DELAY_DAYS`
 de verdad), igual patrón que `scripts/probar_reconciliacion.py`.
 
+**CU-09, validación de firma digital, implementada y probada de punta a punta el
+2026-09-22 — era el último pendiente declarado del entregable.** Nuevo módulo
+`app/documentos/firma.py`, con `pyHanko`: valida que el contenido de un PDF no cambió
+después de firmarse (`intact`), que la firma en sí es criptográficamente correcta
+contra la llave pública del certificado firmante (`valid`), y que esa firma cubre el
+archivo completo (`coverage == ENTIRE_FILE`) — `firma_valida` es la conjunción de las
+tres, evaluada solo sobre la última firma si el PDF trae más de una (este proyecto no
+tiene flujo de cofirma). Extrae además `firma_firmante` (el sujeto del certificado) y
+`firma_fecha` (la fecha que la propia firma reporta), ambos nuevos en `documento`.
+
+**Deliberadamente NO valida la cadena de confianza contra ninguna autoridad
+certificadora** (documentado en docs/especificacion.md, "Validación de firma digital
+(CU-09)"): en Colombia eso exige el almacén de confianza de las entidades acreditadas
+por la ONAC, que este proyecto no tiene, y afirmarlo sin tenerlo simularía una garantía
+que no existe. Se le pasa siempre a pyHanko un `ValidationContext` sin raíces de
+confianza y sin permiso de red (`trust_roots=[]`, `allow_fetching=False`) -- sin esto,
+la versión de pyHanko usada (0.37.0) cae en su comportamiento por defecto (deprecado)
+de validar contra el almacén de confianza **del sistema operativo**, que además de ser
+el almacén equivocado haría el resultado depender de la máquina donde corre el proceso
+y podría intentar red. Sin ese contexto explícito, pyHanko también registra un
+`WARNING` por cada validación (no puede construir una ruta de confianza, algo
+esperado y permanente en nuestro caso, no una anomalía); `app/main.py` sube el logger
+`"pyhanko"` a `ERROR` para no ahogar los logs reales con eso.
+
+Por AD-05 ("la validación de firmas... se ejecuta en el proceso de segundo plano y no
+en la petición del ciudadano"), la validación nunca corre dentro de la petición: CU-05
+y CU-13 solo encolan `validarFirma` en la misma transacción que crea el documento
+(nunca para `image/jpeg` ni `image/png`, que no pueden traer una firma PAdES), y
+`app.interoperabilidad.outbox._validar_firma` la ejecuta en segundo plano, descargando
+el objeto del bucket (nueva `almacenamiento.descargar_objeto`, distinta de generar un
+enlace: aquí hace falta el contenido real, no solo una URL). Una firma inválida
+**nunca** es un rechazo: el documento se guarda igual, con el resultado visible --
+`_validar_firma` no lanza una excepción de negocio por eso. `firma_valida` sin valor
+(`NULL`) significa "no hay firma que validar, o la validación no ha corrido todavía";
+`false` significa "sí se validó y no es válida" -- son estados distintos y la API
+nunca los confunde.
+
+Esto también resuelve el hueco de procedencia de metadatos que las tareas anteriores
+habían dejado pendiente: `documento.certificado` (CU-13, la entidad autenticada
+respalda `entidad_emisora`) y `documento.firma_valida` (CU-09, el contenido y el
+firmante están respaldados criptográficamente) son ahora dos señales reales e
+independientes que la API expone tal cual -- sin inventar una etiqueta de "procedencia"
+propia, esa decisión de presentación es del portal, no del backend
+(docs/especificacion.md, "Procedencia de los metadatos de un documento").
+
+**No se enganchó en CU-16** (recepción de una transferencia): los documentos que llegan
+por esa vía siguen con `firma_valida` sin valor sin importar si traen una firma real --
+no estaba en el alcance pedido para esta tarea (solo CU-05 y CU-13), y queda declarado
+como pendiente abajo y en la especificación.
+
+Se verificó explícitamente que la imagen de Docker (`python:3.12-slim`, Linux, x86_64)
+resuelve las dependencias de criptografía de pyHanko (`cryptography`, `lxml`) con
+paquetes binarios ya compilados (manylinux), sin necesitar un compilador ni paquetes de
+sistema adicionales en el `Dockerfile` -- se confirmó con una reconstrucción sin caché
+de la imagen. Como Railway construye desde ese mismo `Dockerfile`, no debería haber
+sorpresas ahí tampoco, aunque el despliegue real en Railway no se verificó en esta
+tarea (ver "Qué se probó de verdad" de la última tarea reportada).
+
+Probado de punta a punta con `scripts/probar_firma_digital.py` (contra `app-a` viva):
+genera con pyHanko un PDF firmado, uno firmado y luego alterado, y uno sin firma;
+carga los tres por CU-05, espera a que la bandeja de salida los procese, y confirma
+`firma_valida=true` con firmante y fecha correctos para el firmado, `firma_valida=false`
+para el alterado (sin que deje de existir), y `firma_valida` sin valor para el que no
+tiene firma -- distinguido explícitamente comprobando que el trabajo de `outbox` sí
+terminó `COMPLETADO` (no es que la validación no haya corrido, es que no encontró nada
+que aplicar). Repite el caso firmado depositándolo por una entidad emisora (CU-13) y
+confirma `certificado=true` junto con `firma_valida=true`. Los tres regresivos
+(`probar_carpeta_completa.py`, `probar_colision_email.py`) se corrieron de nuevo
+después de este cambio y siguen sin fallos.
+
 ### Pendiente
 
-**CU-09, validación de firma digital** (A1 de CU-05 y CU-16): sin implementar.
-`documento.firma_valida` queda siempre en nulo. Requiere `pyHanko` para validar firmas
-PAdES dentro del PDF.
+**CU-09 en CU-16** (recepción de una transferencia): los documentos que llegan por
+transferencia no encolan `validarFirma` todavía, aunque traigan una firma real. El
+mismo `app.documentos.firma` serviría; solo falta engancharlo desde
+`_recibir_transferencia`. Ver docs/especificacion.md, "Endpoints de transferencia".
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio
 de operadores"): hoy CU-03 simplemente rechaza el envío en ese caso (`ValueError`, no
@@ -423,6 +495,10 @@ app/
                                 descarga, eliminación diferida y sustitución sin perder historia
     entidades.py              POST /api/v1/entidades/documentos: deposito certificado por
                                 una entidad emisora autenticada (CU-13)
+    firma.py                   CU-09: validacion de firma digital PAdES con pyHanko,
+                                sin cadena de confianza (sin almacen ONAC)
+    almacenamiento.py           unico cliente del bucket S3 (subir, bajar, borrar, enlaces firmados)
+    tipos.py                    deteccion de content-type por contenido, no por extension
   interoperabilidad/
     govcarpeta.py              ÚNICO cliente del centralizador
     operadores.py              cliente de otros operadores (descarga, confirmAPI, envío)
@@ -444,6 +520,7 @@ scripts/probar_reenvio_primer_acceso.py  token vencido -> reenvio -> token viejo
 scripts/probar_carpeta_completa.py  CU-07/08/10/11/13/17 + perfil, y _purgar_documentos aislado
 scripts/probar_colision_email.py  _recibir_transferencia en aislamiento: colision de email_carpeta entre dos cedulas
 scripts/alta_entidad_emisora.py  alta, rotacion, revocacion y reactivacion de una entidad emisora (CU-13); no es una ruta publica
+scripts/probar_firma_digital.py  CU-09: genera con pyHanko un PDF firmado/alterado/sin firma y valida los tres
 scripts/mock_centralizador.py  centralizador falso en memoria, solo para esas pruebas
 Dockerfile                     imagen de la app; la usa Railway Y docker-compose.test.yml
 docker-compose.test.yml        solo para probar en Linux en esta maquina (Docker Desktop),
@@ -606,6 +683,7 @@ docker compose -f docker-compose.test.yml run --rm prueba-primer-acceso \
   --base-url=http://app-b:8000 --token=<el-extraido-arriba> --usuario=<cedula>
 docker compose -f docker-compose.test.yml run --rm prueba-reenvio-primer-acceso   # token vencido + reenvio
 docker compose -f docker-compose.test.yml run --rm prueba-carpeta-completa   # CU-07/08/10/11/13/17 + perfil
+docker compose -f docker-compose.test.yml run --rm prueba-firma-digital   # CU-09: firmado/alterado/sin firma
 docker compose -f docker-compose.test.yml down -v             # -v: tambien borra postgres-a/b
 ```
 
@@ -681,6 +759,24 @@ implementar, así que hoy no hay ninguna fila `autorizacion` que pudiera activar
 colisión de `email_carpeta` entre dos cédulas distintas, decidida y documentada como
 parte de esta misma tarea (docs/especificacion.md, "Interoperabilidad entre
 operadores"), no un comportamiento que ya existiera sin probar.
+
+`scripts/probar_firma_digital.py` genera con pyHanko un certificado autofirmado ad-hoc
+(nunca se pretende que sea confiable -- solo sirve para ejercitar la validación
+criptográfica) y tres PDF de prueba: uno firmado, ese mismo alterado después de
+firmarse (cambia un byte del contenido visible), y uno sin firma. Carga los tres por
+CU-05 contra `app-a` viva, espera a que la fila de `outbox` de cada uno termine
+`COMPLETADO`, y verifica: el firmado da `firma_valida=true` con el firmante y la fecha
+correctos; el alterado da `firma_valida=false` sin dejar de existir (una firma inválida
+no rechaza el documento); el que no tiene firma da `firma_valida` sin valor -- se
+confirma consultando la fila de `outbox` directamente, porque para ese caso
+`firma_valida` nunca cambia y por sí solo no probaría que la validación corrió. Repite
+el PDF firmado depositándolo por una entidad emisora (CU-13) y confirma
+`certificado=true` junto con `firma_valida=true`. Tampoco encontró un bug nuevo:
+confirmó que `app.documentos.firma` funciona como se diseñó, incluida la ausencia
+deliberada de validación de cadena de confianza. Probado de punta a punta el
+2026-09-22, junto con una reconstrucción sin caché de la imagen de `app-a` para
+confirmar que pyHanko y sus dependencias de criptografía (`cryptography`, `lxml`)
+instalan con paquetes binarios ya compilados en Linux, sin tocar el `Dockerfile`.
 
 ## Convenciones
 
