@@ -55,6 +55,7 @@ services:
   # Uso:
   #   docker compose -f docker-compose.test.yml up --build -d postgres-a postgres-b mock-centralizador app-a app-b
   #   docker compose -f docker-compose.test.yml run --rm prueba-envio
+  #   docker compose -f docker-compose.test.yml run --rm prueba-carpeta-completa   # CU-07/08/10/17 + perfil
   #   docker compose -f docker-compose.test.yml down -v   # -v: tambien borra los datos de postgres-a/b
 
   postgres-a:
@@ -155,6 +156,17 @@ services:
       - OPERATOR_NAME=Operador A (prueba)
     entrypoint: ["python", "scripts/probar_reconciliacion.py"]
 
+  # scripts/probar_colision_email.py: prueba _recibir_transferencia() en aislamiento
+  # para la colision de email_carpeta entre DOS CEDULAS DISTINTAS (no pasa del paso 2,
+  # nunca llama a GovCarpeta de verdad, asi que no depende de mock-centralizador).
+  prueba-colision-email:
+    build: .
+    depends_on:
+      - postgres-a
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+    entrypoint: ["python", "scripts/probar_colision_email.py"]
+
   # scripts/probar_primer_acceso.py: consume el token de primer acceso de un ciudadano
   # ya recibido por transferencia en app-b (lo emite _emitir_token_primer_acceso al
   # completarse la recepcion) y confirma que puede iniciar sesion despues. El token en
@@ -203,3 +215,22 @@ services:
     entrypoint: ["python", "scripts/probar_regreso_antes_de_purga.py"]
     command:
       - --base-url=http://app-a:8000
+
+  # scripts/probar_carpeta_completa.py: CU-07 (buscar y clasificar), CU-08 (eliminar,
+  # borrado diferido), CU-10 (sustituir sin perder historia), CU-17 (notificaciones) y
+  # GET/PATCH /api/v1/perfil, contra la app-a viva. Al final prueba tambien
+  # _purgar_documentos en aislamiento (retrocede purgar_despues_de en la base, sin
+  # esperar PURGE_DELAY_DAYS de verdad) -- necesita el .env real montado porque esa
+  # parte borra el objeto del documento purgado del bucket S3 real.
+  prueba-carpeta-completa:
+    build: .
+    depends_on:
+      - app-a
+    volumes:
+      - ./.env:/app/.env:ro
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+    entrypoint: ["python", "scripts/probar_carpeta_completa.py"]
+    command:
+      - --base-url=http://app-a:8000
+      - --database-url=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a

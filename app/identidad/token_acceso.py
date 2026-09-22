@@ -1,13 +1,17 @@
-"""Token de un solo uso para que un ciudadano recibido por transferencia (sin
-contrasena local, ver `Ciudadano.password_hash`) establezca su contrasena inicial.
+"""Secretos opacos de alta entropia, buscables por igualdad de su hash.
+
+Dos usos en el proyecto: el token de un solo uso con el que un ciudadano recibido por
+transferencia (sin contrasena local, ver `Ciudadano.password_hash`) establece su
+contrasena inicial; y la clave de API de una entidad emisora (`EntidadEmisora`,
+CU-13) autenticada por el encabezado `X-Api-Key`.
 
 A diferencia del token de sesion (`app/identidad/token.py`, un JWT firmado y
-autocontenido), este es un valor aleatorio opaco: se entrega en claro una sola vez, por
-correo, y solo su hash se guarda. El hash es determinista (SHA-256, sin sal) a
-proposito -- a diferencia de una contrasena, este valor tiene entropia alta de por si
-(256 bits generados por `secrets`), asi que no hace falta un hash costoso como Argon2;
-lo que si hace falta es poder buscarlo por igualdad en la base (`WHERE hash = ...`), que
-un hash con sal aleatoria no permite.
+autocontenido), esto es un valor aleatorio opaco: se entrega en claro una sola vez (por
+correo, o al darse de alta) y solo su hash se guarda. El hash es determinista (SHA-256,
+sin sal) a proposito -- a diferencia de una contrasena, este valor tiene entropia alta
+de por si (256 bits generados por `secrets`), asi que no hace falta un hash costoso
+como Argon2; lo que si hace falta es poder buscarlo por igualdad en la base
+(`WHERE hash = ...`), que un hash con sal aleatoria no permite.
 """
 
 from __future__ import annotations

@@ -23,7 +23,9 @@ from app.errors import (
     manejar_error_de_validacion,
     manejar_error_no_previsto,
 )
+from app.documentos.entidades import router as entidades_router
 from app.documentos.router import router as documentos_router
+from app.identidad.perfil import router as perfil_router
 from app.identidad.perfil_totp import router as perfil_totp_router
 from app.identidad.primer_acceso import router as primer_acceso_router
 from app.identidad.registro import router as registro_router
@@ -32,6 +34,7 @@ from app.interoperabilidad.outbox import ejecutar_bandeja_de_salida
 from app.interoperabilidad.transferencias import router as transferencias_router
 from app.interoperabilidad.transferencias import router_propio as traslado_router
 from app.mock.registraduria import router as registraduria_router
+from app.notificaciones.router import router as notificaciones_router
 
 
 @asynccontextmanager
@@ -91,7 +94,10 @@ app.include_router(registraduria_router)
 app.include_router(registro_router)
 app.include_router(primer_acceso_router)
 app.include_router(sesion_router)
+app.include_router(perfil_router)
 app.include_router(perfil_totp_router)
 app.include_router(documentos_router)
+app.include_router(entidades_router)
+app.include_router(notificaciones_router)
 app.include_router(transferencias_router)
 app.include_router(traslado_router)

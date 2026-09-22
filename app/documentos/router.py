@@ -11,13 +11,22 @@ independiente, a diferencia del documento de identidad de CU-01 (que la Registra
 entrega junto con su propio `firma`). `firma_valida` queda en NULL para lo que se sube
 aqui, listo para cuando exista un flujo que si aporte una firma que validar.
 
-A2 (sustitucion) es explicita, no inferida: el formulario acepta `sustituye_a` con el id
-del documento temporal a reemplazar. Sin ese campo, toda carga crea un documento nuevo,
-aunque coincidan titulo/tipo/entidad_emisora con uno existente -- inferir la sustitucion
-por esos metadatos hacia que dos documentos distintos con la misma descripcion se
-pisaran entre si y se perdiera el anterior del bucket sin que el ciudadano lo pidiera.
-Cuando si viene, se borra el anterior (objeto y fila) y la sustitucion misma queda
-registrada en auditoria, que es donde este modelo de datos conserva ese tipo de rastro.
+A2 (sustitucion, CU-10) es explicita, no inferida: el formulario acepta `sustituye_a` con
+el id del documento temporal a reemplazar. Sin ese campo, toda carga crea un documento
+nuevo, aunque coincidan titulo/tipo/entidad_emisora con uno existente -- inferir la
+sustitucion por esos metadatos haria que dos documentos distintos con la misma
+descripcion se pisaran entre si y se perdiera el anterior sin que el ciudadano lo pidiera.
+Cuando si viene, el documento anterior NO se borra: pasa a `estado=REEMPLAZADO` (fila y
+objeto del bucket se conservan, sin perder su historia) y el nuevo queda enlazado a el
+por `sustituye_a_id`. Un documento REEMPLAZADO deja de listarse (CU-07) y de contar
+contra la cuota, pero sigue siendo consultable por `GET /documentos/{id}` para seguir el
+historial hacia atras; solo un documento ELIMINADO (CU-08) deja de ser accesible del
+todo.
+
+CU-08 (`DELETE /documentos/{id}`): borrado diferido de un documento no certificado, igual
+patron que la purga de `transferencia` -- se marca `ELIMINADO` con `purgar_despues_de` y
+`app.interoperabilidad.outbox._purgar_documentos` lo purga fisicamente (fila y objeto)
+al cumplirse el plazo.
 
 CU-11 (autenticacion ante GovCarpeta): `POST .../autenticacion` solo escribe en outbox y
 marca el documento PENDIENTE; el enlace firmado de 15 min, la llamada al centralizador y
@@ -46,7 +55,15 @@ from app.documentos.almacenamiento import FalloAlmacenamiento, eliminar_objeto, 
 from app.documentos.tipos import TIPOS_PERMITIDOS, detectar_content_type
 from app.errors import ErrorDeNegocio
 from app.identidad.dependencias import ciudadano_actual
-from app.models import Auditoria, Ciudadano, Documento, EstadoAutenticacionDocumento, EstadoCiudadano, Outbox
+from app.models import (
+    Auditoria,
+    Ciudadano,
+    Documento,
+    EstadoAutenticacionDocumento,
+    EstadoCiudadano,
+    EstadoDocumento,
+    Outbox,
+)
 
 router = APIRouter(prefix="/api/v1/documentos", tags=["documentos"])
 
@@ -63,6 +80,11 @@ class RespuestaDocumento(BaseModel):
     certificado: bool
     firma_valida: bool | None
     estado_autenticacion: EstadoAutenticacionDocumento
+    estado: EstadoDocumento
+    # CU-10: el documento que este reemplazo, si llego por sustitucion explicita. Se
+    # expone para que la sustitucion no sea una caja negra: el ciudadano puede seguir el
+    # historial hacia atras consultando ese id con GET /documentos/{id}.
+    sustituye_a: uuid.UUID | None
     tamano_bytes: int
     hash_sha256: str
     creado_en: datetime
@@ -98,6 +120,26 @@ def _exigir_activo(ciudadano: Ciudadano) -> None:
         raise ErrorDeNegocio("ESTADO_INVALIDO", "Tu carpeta no esta activa.")
 
 
+async def resolver_sustitucion(
+    session: AsyncSession, *, ciudadano_id: int, sustituye_a: uuid.UUID | None
+) -> Documento | None:
+    """CU-10: valida y devuelve el documento que una nueva carga sustituye, o None si
+    `sustituye_a` no vino. Compartido entre la carga propia del ciudadano
+    (`cargar_documento`) y el depósito de una entidad emisora
+    (`app.documentos.entidades`, CU-13), que también puede certificar el reemplazo de
+    un documento temporal existente."""
+    if sustituye_a is None:
+        return None
+    anterior = await session.get(Documento, sustituye_a)
+    if anterior is None or anterior.estado != EstadoDocumento.ACTIVO:
+        raise ErrorDeNegocio("RECURSO_NO_ENCONTRADO", "El documento a sustituir no existe.")
+    if anterior.ciudadano_id != ciudadano_id:
+        raise ErrorDeNegocio("NO_AUTORIZADO", "El documento a sustituir no pertenece a esa carpeta.")
+    if anterior.certificado:
+        raise ErrorDeNegocio("ESTADO_INVALIDO", "No se puede sustituir un documento certificado.")
+    return anterior
+
+
 def _a_respuesta(d: Documento) -> RespuestaDocumento:
     return RespuestaDocumento(
         id=d.id,
@@ -108,6 +150,8 @@ def _a_respuesta(d: Documento) -> RespuestaDocumento:
         certificado=d.certificado,
         firma_valida=d.firma_valida,
         estado_autenticacion=d.estado_autenticacion,
+        estado=d.estado,
+        sustituye_a=d.sustituye_a_id,
         tamano_bytes=d.tamano_bytes,
         hash_sha256=d.hash_sha256,
         creado_en=d.creado_en,
@@ -171,36 +215,42 @@ async def cargar_documento(
         assert ciudadano is not None
         _exigir_activo(ciudadano)
 
-        # --- E5: archivo duplicado segun hash_sha256 --------------------------------
+        # --- E5: archivo duplicado segun hash_sha256 (solo entre lo vigente: un mismo
+        # archivo vuelto a cargar despues de eliminarlo o de que fuera reemplazado crea
+        # un documento nuevo, no reaparece el viejo oculto) -------------------------
         r = await session.execute(
-            select(Documento).where(Documento.ciudadano_id == ciudadano.id, Documento.hash_sha256 == hash_sha256)
+            select(Documento).where(
+                Documento.ciudadano_id == ciudadano.id,
+                Documento.hash_sha256 == hash_sha256,
+                Documento.estado == EstadoDocumento.ACTIVO,
+            )
         )
         duplicado = r.scalar_one_or_none()
         if duplicado is not None:
             response.status_code = 200
             return _a_respuesta(duplicado)
 
-        # --- A2: sustituye a un documento temporal, solo si el ciudadano lo pide -----
-        anterior: Documento | None = None
-        if sustituye_a is not None:
-            anterior = await session.get(Documento, sustituye_a)
-            if anterior is None:
-                raise ErrorDeNegocio("RECURSO_NO_ENCONTRADO", "El documento a sustituir no existe.")
-            if anterior.ciudadano_id != ciudadano.id:
-                raise ErrorDeNegocio("NO_AUTORIZADO", "El documento a sustituir no pertenece a tu carpeta.")
-            if anterior.certificado:
-                raise ErrorDeNegocio("ESTADO_INVALIDO", "No se puede sustituir un documento certificado.")
+        # --- A2/CU-10: sustituye a un documento temporal, solo si el ciudadano lo pide
+        anterior = await resolver_sustitucion(session, ciudadano_id=ciudadano.id, sustituye_a=sustituye_a)
 
-        # --- E1: cuota agotada (solo temporales; certificados no consumen cuota) ----
+        # --- E1: cuota agotada (solo temporales activos; certificados no consumen
+        # cuota, y lo reemplazado/eliminado ya no cuenta) ----------------------------
         r = await session.execute(
             select(func.coalesce(func.sum(Documento.tamano_bytes), 0))
             .select_from(Documento)
-            .where(Documento.ciudadano_id == ciudadano.id, Documento.certificado.is_(False))
+            .where(
+                Documento.ciudadano_id == ciudadano.id,
+                Documento.certificado.is_(False),
+                Documento.estado == EstadoDocumento.ACTIVO,
+            )
         )
         # SUM(bigint) en Postgres devuelve NUMERIC -> Decimal; JSONResponse usa
         # json.dumps plano y no sabe serializar Decimal, hay que volverlo int.
         usado = int(r.scalar_one())
         if anterior is not None:
+            # Todavia ACTIVO en este punto (se marca REEMPLAZADO mas abajo, tras superar
+            # esta validacion): la consulta de arriba ya lo conto, hay que descontarlo
+            # para no cobrarle al ciudadano el espacio del documento que esta dejando ir.
             usado -= anterior.tamano_bytes
         if usado + len(contenido) > cfg.cuota_ciudadano_bytes:
             raise ErrorDeNegocio(
@@ -227,11 +277,15 @@ async def cargar_documento(
             hash_sha256=hash_sha256,
             certificado=False,
             firma_valida=None,
+            sustituye_a_id=anterior.id if anterior is not None else None,
         )
         session.add(nuevo)
 
+        # CU-10: el anterior no se borra -- pasa a REEMPLAZADO, fila y objeto se
+        # conservan como historia. Deja de listarse (CU-07) y de contar contra la
+        # cuota (arriba), pero sigue siendo consultable por su id.
         if anterior is not None:
-            await session.delete(anterior)
+            anterior.estado = EstadoDocumento.REEMPLAZADO
 
         session.add(
             Auditoria(
@@ -253,10 +307,6 @@ async def cargar_documento(
 
         await session.refresh(nuevo)
 
-    if anterior is not None:
-        with contextlib.suppress(FalloAlmacenamiento):
-            eliminar_objeto(clave=anterior.s3_key)
-
     response.status_code = 201
     return _a_respuesta(nuevo)
 
@@ -267,22 +317,28 @@ async def listar_documentos(
     entidad: str | None = None,
     desde: date | None = None,
     hasta: date | None = None,
+    certificado: bool | None = None,
+    estado_autenticacion: EstadoAutenticacionDocumento | None = None,
     q: str | None = None,
     page: int = 1,
     size: int = TAMANO_PAGINA_DEFECTO,
     actual: Ciudadano = Depends(ciudadano_actual),
 ) -> RespuestaListaDocumentos:
-    """Lista los documentos del ciudadano autenticado.
+    """Busca y clasifica los documentos del ciudadano autenticado (CU-06, CU-07).
 
     Acepta filtros opcionales por tipo (`tipo`), entidad emisora (`entidad`, coincidencia
-    parcial), rango de fecha de emisión (`desde`/`hasta`) y texto en el título (`q`), más
-    paginación (`page`, `size`; tamaño de página máximo 100). Devuelve los documentos más
-    recientes primero, junto con el total de resultados que coinciden con los filtros.
+    parcial), rango de fecha de emisión (`desde`/`hasta`), estado de certificación
+    (`certificado`), estado de autenticación ante GovCarpeta (`estado_autenticacion`) y
+    texto en el título (`q`), más paginación (`page`, `size`; tamaño de página máximo
+    100). Devuelve los documentos más recientes primero, junto con el total de
+    resultados que coinciden con los filtros. Solo incluye los documentos vigentes de la
+    carpeta: los reemplazados por una versión más reciente o eliminados no aparecen
+    aquí, aunque siguen siendo consultables por su id.
     """
     page = max(page, 1)
     size = max(1, min(size, TAMANO_PAGINA_MAXIMO))
 
-    condiciones = [Documento.ciudadano_id == actual.id]
+    condiciones = [Documento.ciudadano_id == actual.id, Documento.estado == EstadoDocumento.ACTIVO]
     if tipo:
         condiciones.append(Documento.tipo == tipo)
     if entidad:
@@ -291,6 +347,10 @@ async def listar_documentos(
         condiciones.append(Documento.fecha_emision >= _a_datetime_utc(desde))
     if hasta:
         condiciones.append(Documento.fecha_emision <= _a_datetime_utc(hasta, fin_del_dia=True))
+    if certificado is not None:
+        condiciones.append(Documento.certificado.is_(certificado))
+    if estado_autenticacion is not None:
+        condiciones.append(Documento.estado_autenticacion == estado_autenticacion)
     if q:
         condiciones.append(Documento.titulo.ilike(f"%{q}%"))
 
@@ -311,8 +371,12 @@ async def listar_documentos(
 
 
 async def _obtener_propio(session: AsyncSession, documento_id: uuid.UUID, ciudadano_id: int) -> Documento:
+    """Devuelve un documento propio siempre que siga siendo accesible: ACTIVO o
+    REEMPLAZADO (CU-10 lo conserva como historia consultable). Uno ELIMINADO (CU-08) se
+    trata igual que si no existiera -- "dejan de ser accesibles" (especificacion,
+    "Borrado")."""
     documento = await session.get(Documento, documento_id)
-    if documento is None:
+    if documento is None or documento.estado == EstadoDocumento.ELIMINADO:
         raise ErrorDeNegocio("RECURSO_NO_ENCONTRADO", "El documento no existe.")
     if documento.ciudadano_id != ciudadano_id:
         raise ErrorDeNegocio("NO_AUTORIZADO", "El documento no pertenece a tu carpeta.")
@@ -321,14 +385,52 @@ async def _obtener_propio(session: AsyncSession, documento_id: uuid.UUID, ciudad
 
 @router.get("/{documento_id}", response_model=RespuestaDocumento)
 async def obtener_documento(documento_id: uuid.UUID, actual: Ciudadano = Depends(ciudadano_actual)) -> RespuestaDocumento:
-    """Consulta los metadatos de un documento propio.
+    """Consulta los metadatos de un documento propio, incluido uno ya reemplazado por
+    una versión más reciente (para seguir su historial con `sustituye_a`).
 
-    Devuelve 404 si el documento no existe, o 403 si no pertenece al ciudadano
-    autenticado.
+    Devuelve 404 si el documento no existe o fue eliminado, o 403 si no pertenece al
+    ciudadano autenticado.
     """
     async with SessionLocal() as session:
         documento = await _obtener_propio(session, documento_id, actual.id)
         return _a_respuesta(documento)
+
+
+@router.delete("/{documento_id}", status_code=204, response_model=None)
+async def eliminar_documento(
+    documento_id: uuid.UUID, request: Request, actual: Ciudadano = Depends(ciudadano_actual)
+) -> None:
+    """Elimina un documento no certificado de la carpeta del ciudadano autenticado.
+
+    El borrado es diferido: el documento deja de listarse y de ser accesible de
+    inmediato, pero el objeto se conserva en el almacenamiento hasta la purga física.
+    Devuelve 404 si el documento no existe o ya fue eliminado, 403 si no pertenece al
+    ciudadano autenticado, 409 si el documento está certificado, o 409 si ya fue
+    reemplazado por una versión más reciente.
+    """
+    cfg = get_config()
+    async with SessionLocal() as session:
+        documento = await _obtener_propio(session, documento_id, actual.id)
+
+        if documento.certificado:
+            raise ErrorDeNegocio("DOCUMENTO_CERTIFICADO", "No se puede eliminar un documento certificado.")
+        if documento.estado != EstadoDocumento.ACTIVO:
+            raise ErrorDeNegocio("ESTADO_INVALIDO", "El documento ya fue reemplazado por una version mas reciente.")
+
+        documento.estado = EstadoDocumento.ELIMINADO
+        documento.purgar_despues_de = datetime.now(timezone.utc) + timedelta(days=cfg.purge_delay_days)
+
+        session.add(
+            Auditoria(
+                actor=str(actual.id),
+                accion="documento.eliminado",
+                recurso=str(documento.id),
+                ciudadano_id=actual.id,
+                correlation_id=_correlation_id(request),
+                detalle={"purgar_despues_de": documento.purgar_despues_de.isoformat()},
+            )
+        )
+        await session.commit()
 
 
 @router.get("/{documento_id}/descarga", response_model=RespuestaDescarga)
@@ -383,10 +485,19 @@ async def solicitar_autenticacion(
     consulta luego con `GET` sobre esta misma ruta. Si el documento ya estaba
     autenticado, responde 200 con el resultado guardado en vez de solicitarlo de nuevo;
     si ya había una solicitud en curso, responde 202 sin duplicarla. Devuelve 404 si el
-    documento no existe, o 403 si no pertenece al ciudadano autenticado.
+    documento no existe, 403 si no pertenece al ciudadano autenticado, o 409 si el
+    documento ya no está vigente (fue reemplazado por una versión más reciente).
     """
     async with SessionLocal() as session:
         documento = await _obtener_propio(session, documento_id, actual.id)
+
+        # No tiene sentido pedirle al centralizador que autentique un documento que el
+        # propio ciudadano ya sustituyo (CU-10): _obtener_propio deja pasar un
+        # REEMPLAZADO porque sigue siendo consultable para ver su historia, pero aqui
+        # es una operacion nueva sobre el, no una lectura -- se rechaza sin importar si
+        # ya tenia un resultado guardado de antes de ser reemplazado.
+        if documento.estado != EstadoDocumento.ACTIVO:
+            raise ErrorDeNegocio("ESTADO_INVALIDO", "El documento ya no esta vigente: fue reemplazado por una version mas reciente.")
 
         # A1: ya autenticado, no se reenvia; se muestra el resultado guardado.
         if documento.estado_autenticacion == EstadoAutenticacionDocumento.AUTENTICADO:

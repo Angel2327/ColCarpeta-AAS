@@ -24,13 +24,18 @@ Usa `alembic revision --autogenerate` y valida contra la base real: hay Postgres
 
 ### Construido
 
-`app/config.py`, `app/db.py`, `app/errors.py` · `app/models.py` con las 7 tablas ·
-migraciones aplicadas · `app/interoperabilidad/` (cliente del centralizador, cliente de
-otros operadores, bandeja de salida, envío y recepción de transferencias) ·
-`app/mock/registraduria.py` · `app/identidad/` (registro, correo, seguridad, sesión,
-token, TOTP, dependencias) · `app/documentos/` (almacenamiento S3, detección de tipo,
-rutas, autenticación) · `scripts/limpiar_prueba.py` · `scripts/probar_transferencia.py` ·
-`scripts/probar_envio_transferencia.py` · `scripts/mock_centralizador.py`.
+`app/config.py`, `app/db.py`, `app/errors.py` · `app/models.py` con las 9 tablas
+(agregadas `notificacion` CU-17 y `entidad_emisora` CU-13) · migraciones aplicadas ·
+`app/interoperabilidad/` (cliente del centralizador, cliente de otros operadores,
+bandeja de salida, envío y recepción de transferencias) · `app/mock/registraduria.py` ·
+`app/identidad/` (registro, correo, seguridad, sesión, token, TOTP, dependencias,
+perfil) · `app/documentos/` (almacenamiento S3, detección de tipo, rutas, autenticación,
+búsqueda, eliminación y sustitución de documentos, depósito por entidad emisora) ·
+`app/notificaciones/` (envío simulado y centro de notificaciones, CU-17) ·
+`scripts/limpiar_prueba.py` · `scripts/probar_transferencia.py` ·
+`scripts/probar_envio_transferencia.py` · `scripts/mock_centralizador.py` ·
+`scripts/probar_carpeta_completa.py` · `scripts/alta_entidad_emisora.py` ·
+`scripts/probar_colision_email.py`.
 
 **Los cuatro flujos obligatorios de la entrega están implementados y probados de punta
 a punta contra el sistema real del MinTIC.**
@@ -141,13 +146,21 @@ nombrar al destino: se queda `ENVIADA`, no se resuelve sola, y queda auditado co
      `TRASLADADO`).
    - **Dos ciudadanos _distintos_, de operadores de origen distintos, que por
      coincidencia generan el mismo `citizenEmail` (mismo nombre y año) hacia el mismo
-     destino — sigue sin manejarse.** La inserción viola la unicidad y
-     `_recibir_transferencia` la trata como rechazo de negocio genérico (descarta al
-     ciudadano recibido, responde `req_status = 0`): no se cae el proceso, pero tampoco
-     hay aviso claro de que la causa fue una colisión de correo y no un rechazo
-     legítimo. Sigue en Pendiente — es un caso real distinto del anterior (dos
-     identidades distintas, no la misma persona regresando) y no tiene una resolución
-     tan directa (no hay un registro "propio" que reemplazar).
+     destino (resuelto, 2026-09-22).** A diferencia de la variante anterior, aquí no hay
+     un registro "propio" que reemplazar: son dos identidades reales distintas, y AD-10
+     prohíbe inventarle una dirección alterna a cualquiera de las dos. Política
+     documentada en docs/especificacion.md ("Interoperabilidad entre operadores" >
+     "Colisión de `email_carpeta` entre dos ciudadanos distintos") y en AD-10: se
+     rechaza la recepción entrante, nunca al ciudadano ya afiliado en ColCarpeta.
+     Corregido en `_recibir_transferencia` (paso 2): antes de crear el ciudadano,
+     consulta si `email_carpeta` ya pertenece a una cédula distinta y, si es así,
+     levanta un `ValueError` con el diagnóstico explícito (qué cédula ya tiene esa
+     dirección) en vez de dejar que la violación de la restricción UNIQUE de la base
+     lo tumbe con un error opaco. El efecto es el mismo que cualquier otro rechazo de
+     esta recepción: `req_status = 0`, el origen recupera al ciudadano con su propio
+     `registerCitizen`. Probado de punta a punta con
+     `scripts/probar_colision_email.py`: dos cédulas distintas, mismo `citizenEmail`,
+     la segunda se rechaza con el diagnóstico correcto y la primera queda intacta.
 
 **Primer acceso: establecimiento de contraseña para un ciudadano recibido por
 transferencia, implementado y probado de punta a punta el 2026-09-22.** Ese ciudadano
@@ -252,28 +265,125 @@ mitigación (tratar NULL como colgada) hace que el sistema se recupere solo de t
 formas, pero si vuelve a aparecer vale la pena investigarlo con más cuidado antes de
 asumir que está resuelto.
 
+**CU-07 (buscar y clasificar), CU-08 (eliminar documento no certificado), CU-10
+(sustituir documento temporal) y CU-17 (centro de notificaciones), más `GET`/`PATCH
+/api/v1/perfil`, implementados y probados de punta a punta el 2026-09-22.** Ninguno de
+los cuatro casos de uso tiene especificación detallada en el documento (solo CU-01,
+CU-02, CU-05 y CU-11 la tienen), así que varias decisiones de forma quedaron a criterio
+de esta implementación, documentadas abajo.
+
+`documento` gana un estado propio (`estado`: `ACTIVO` | `REEMPLAZADO` | `ELIMINADO`,
+antes no existía) que unifica CU-08 y CU-10 sin perder información:
+
+- **CU-10 dejó de borrar el documento sustituido.** Antes (A2 de CU-05), sustituir un
+  documento con `sustituye_a` borraba la fila y el objeto del anterior de inmediato —
+  funcionaba, pero le faltaba justo lo que pide CU-10 explícitamente ("sin perder su
+  historia"). Ahora el documento viejo pasa a `REEMPLAZADO` (fila y objeto en el bucket
+  se conservan indefinidamente) y el nuevo queda enlazado a él por `sustituye_a_id`. Uno
+  `REEMPLAZADO` deja de aparecer en el listado (`GET /documentos`) y de contar contra la
+  cuota, pero sigue siendo consultable por `GET /documentos/{id}` para seguir el
+  historial hacia atrás. No se agregó una forma de marcar `certificado=true`: sigue sin
+  existir un camino real hacia ahí en esta entrega (ver CU-09, más abajo) — la prueba de
+  punta a punta sustituye un documento temporal por otro documento temporal, no por uno
+  certificado de verdad.
+- **CU-08 es borrado diferido, igual patrón que `transferencia`.** `DELETE
+  /api/v1/documentos/{id}` marca `ELIMINADO` con `purgar_despues_de` (`PURGE_DELAY_DAYS`
+  después) en vez de borrar nada en el momento; rechaza documentos certificados (409) y
+  documentos ya `REEMPLAZADO` (409, no tiene sentido "eliminar" algo que ya dejó de estar
+  vigente por otra vía). `app.interoperabilidad.outbox._purgar_documentos`, nueva parada
+  del mismo mantenimiento periódico que ya purgaba `transferencia`, borra la fila y el
+  objeto del bucket al cumplirse el plazo. Esto exigió una corrección de modelo
+  relacionada: `autorizacion.documento_id` no tenía `ON DELETE CASCADE` — sin eso, la
+  purga fallaría por violación de FK en cuanto existiera alguna autorización sobre el
+  documento (CU-18 sigue sin implementar, así que hoy nunca pasa, pero habría sido el
+  mismo tipo de bug que ya costó una migración aparte con `transferencia.ciudadano_id`).
+
+CU-07 extiende `GET /api/v1/documentos` (ya tenía `tipo`, `entidad`, `desde`, `hasta`,
+`q`, paginación) con `certificado` y `estado_autenticacion`, y ahora excluye por defecto
+lo `REEMPLAZADO`/`ELIMINADO` — solo se listan documentos vigentes.
+
+CU-17 se apoya enteramente en `app/notificaciones/`, sin mecanismo paralelo:
+`enviar_correo` (antes solo registraba en el log) ahora también inserta una fila en la
+nueva tabla `notificacion`, así que cada correo simulado que el sistema ya enviaba
+(registro, primer acceso, reenvío) queda además en la bandeja del ciudadano. Esto
+cambió su firma (ahora recibe la sesión y `ciudadano_id`) y se actualizaron los tres
+puntos que la llaman. `GET /api/v1/notificaciones` (paginado, con `solo_no_leidas`) y
+`POST /notificaciones/{id}/leida` son las dos rutas nuevas.
+
+`GET/PATCH /api/v1/perfil` (nuevo archivo `app/identidad/perfil.py`): `GET` devuelve los
+datos del ciudadano, el estado de la carpeta y la cuota (`cuota_bytes`/`usado_bytes`,
+mismo cálculo que la carga de documentos). `PATCH` solo admite `direccion`, `telefono` y
+`email_personal` — ni la cédula ni `email_carpeta` son editables (AD-10).
+
+**CU-11 ya no deja pedir autenticación de un documento fuera de vigencia, probado el
+2026-09-22.** `POST /documentos/{id}/autenticacion` sobre un documento `REEMPLAZADO`
+ahora responde 409 `ESTADO_INVALIDO` (no tiene sentido reenviar al centralizador algo
+que el ciudadano ya sustituyó), y sobre uno `ELIMINADO` sigue respondiendo 404 —eso ya
+lo cubría `_obtener_propio` desde CU-08, sin que nadie lo hubiera probado explícitamente
+hasta ahora—. `GET .../autenticacion` no cambió: sigue mostrando el resultado guardado
+de un documento `REEMPLAZADO`, porque ahí sí aplica "sin perder su historia".
+
+**CU-13 (mínimo), depósito de un documento certificado por una entidad emisora,
+implementado y probado de punta a punta el 2026-09-22.** Es la primera vía real por la
+que un documento llega a `certificado = true` — hasta ahora esa condición nunca se
+ejercitaba (ver el punto de "Pendiente" que esto resuelve, abajo). Nueva tabla
+`entidad_emisora` (id = identificación tipo NIT, nombre, `api_key_hash`, `estado`) — es
+CU-04 en su mínima expresión, solo lo que CU-13 necesita: no hay registro público ni
+consola, solo `scripts/alta_entidad_emisora.py` (acceso directo a la base). `POST
+/api/v1/entidades/documentos` (nuevo módulo `app/documentos/entidades.py`) autentica a
+la entidad por la clave de API en `X-Api-Key` (mismo esquema de hash que el token de
+primer acceso, generalizado en `app.identidad.token_acceso`), exige que la cédula
+corresponda a un ciudadano `ACTIVO` (404 si no), y crea el documento con
+`certificado = true`, `entidad_emisora` tomado del nombre de la entidad autenticada
+(nunca de un campo declarado en la petición), sin consumir cuota. Admite `sustituye_a`
+igual que la carga propia del ciudadano (CU-10), reutilizando la misma validación
+(`resolver_sustitucion`, extraída de `documentos/router.py` para compartirla entre los
+dos módulos). El ciudadano recibe notificación por el centro de CU-17. CU-09
+(validación de firma) sigue sin implementar: `firma_valida` queda en NULL para lo que
+llega por esta vía también, sin inventar un resultado.
+
+**Revocación y reactivación de una entidad emisora, agregadas el 2026-09-22.**
+`EntidadEmisora.estado` (`ACTIVA` | `REVOCADA`) se agregó específicamente porque antes
+solo se podía rotar la clave, nunca desactivar una entidad sin borrar la fila —y
+borrarla habría roto su rastro en `auditoria` y el `entidad_emisora` (texto plano) ya
+guardado en los documentos que depositó—. `scripts/alta_entidad_emisora.py` ahora tiene
+tres subcomandos: `alta` (crea o rota la clave, sin tocar el estado), `revocar` y
+`reactivar`. `app.documentos.entidades.entidad_actual` rechaza con 401 a una entidad
+`REVOCADA` aunque presente la clave correcta; revocar no invalida esa clave, solo
+bloquea su uso, así que reactivar la deja funcionando de nuevo sin necesidad de
+comunicarle una clave nueva.
+
+Probado de punta a punta con `scripts/probar_carpeta_completa.py` (contra `app-a`
+viva), ahora extendido: filtros de CU-07, sustitución CU-10 con verificación de que el
+documento viejo sigue consultable y ya no cuenta en la cuota, borrado CU-08 con sus
+rechazos (409 certificado, 409 ya reemplazado), CU-11 rechazando autenticación sobre lo
+no vigente, el depósito de CU-13 (certificado, entidad tomada de la credencial, sin
+impacto en cuota, sustituyendo un temporal, sin admitir borrado), la entidad revocada
+rechazada con 401 y reactivada con la misma clave, notificación mencionando a la
+entidad y la de registro marcable como leída en CU-17, y `PATCH /perfil` aplicando los
+cambios sin tocar `email_carpeta`. Al final prueba también `_purgar_documentos` en
+aislamiento (retrocede `purgar_despues_de` en la base, sin esperar `PURGE_DELAY_DAYS`
+de verdad), igual patrón que `scripts/probar_reconciliacion.py`.
+
 ### Pendiente
 
 **CU-09, validación de firma digital** (A1 de CU-05 y CU-16): sin implementar.
 `documento.firma_valida` queda siempre en nulo. Requiere `pyHanko` para validar firmas
 PAdES dentro del PDF.
 
-**Colisión de `email_carpeta` entre dos ciudadanos distintos al recibir** (ver arriba,
-bug 3, segunda variante): sin deduplicación ni aviso especial cuando dos operadores de
-origen distintos generan el mismo `citizenEmail` para el mismo destino. La variante del
-mismo ciudadano regresando antes de su propia purga sí está resuelta.
-
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio
 de operadores"): hoy CU-03 simplemente rechaza el envío en ese caso (`ValueError`, no
 reintentable) en vez de repartir por correo electrónico.
 
-`GET /api/v1/perfil` (documentado en "Contrato de la API propia", "Datos del ciudadano
-y estado de su carpeta") **no existe todavía**: no lo pidió esta entrega, pero significa
-que hoy no hay forma de consultar el estado de la carpeta por API — las pruebas de CU-03
-verifican el estado consultando la base de datos directamente.
+**CU-04 completo (registro público de entidades) sigue sin implementar.** Solo existe
+el mínimo que CU-13 necesita (`entidad_emisora` + `scripts/alta_entidad_emisora.py`, ver
+arriba) — no hay registro por API ni consola. Revocar y reactivar sí existen (ver
+arriba); lo que sigue faltando es dar de alta o consultar entidades sin acceso directo
+a la base.
 
-Notificaciones más allá del correo de registro y el de primer acceso (ver arriba),
-consola de administración.
+Notificaciones más allá del correo de registro, primer acceso, reenvío y depósito de un
+documento por una entidad (ver arriba), consola de administración, y CU-06 sin
+`descarga` masiva ni paquetes (RF27).
 
 No registrar `registerTransferEndPoint` todavía: ver "Prohibido".
 
@@ -296,20 +406,30 @@ PostgreSQL y almacenamiento S3 en Supabase · despliegue en Railway.
 app/
   main.py                      arranque, middleware de correlación, config de logging, ciclo de vida
   config.py  db.py  errors.py  configuración, sesión de BD, sobre de errores
-  models.py                    las 7 tablas
+  models.py                    las 9 tablas
   identidad/
     seguridad.py               hash de contraseñas (Argon2id) + regla de formato compartida
     token.py                   JWT de sesión (RS256)
-    token_acceso.py            token de un solo uso para primer acceso (SHA-256)
+    token_acceso.py            secretos opacos de alta entropia (SHA-256): primer acceso Y
+                                clave de API de una entidad emisora (CU-13)
     dependencias.py            auth de sesión + resolver_usuario (cedula o email_carpeta)
     primer_acceso.py           POST /api/v1/primer-acceso y /primer-acceso/reenviar
-  notificaciones/correo.py     envío de correo simulado (sin proveedor real integrado)
+    perfil.py                  GET/PATCH /api/v1/perfil (datos y cuota, CU-03 no incluido: ver interoperabilidad/)
+  notificaciones/
+    correo.py                  envío de correo simulado (sin proveedor real integrado) + registro en `notificacion`
+    router.py                  GET /api/v1/notificaciones y POST .../leida (CU-17)
+  documentos/
+    router.py                  CU-05/06/07/08/10: carga, listado con filtros, consulta,
+                                descarga, eliminación diferida y sustitución sin perder historia
+    entidades.py              POST /api/v1/entidades/documentos: deposito certificado por
+                                una entidad emisora autenticada (CU-13)
   interoperabilidad/
     govcarpeta.py              ÚNICO cliente del centralizador
     operadores.py              cliente de otros operadores (descarga, confirmAPI, envío)
     outbox.py                  bandeja de salida + mantenimiento periódico (directorio,
-                                reconciliación, purga) + emisión del token de primer acceso
-    transferencias.py          router (/api, CU-16) + router_propio (/api/v1/perfil, CU-03)
+                                reconciliación, purga de transferencias y de documentos) +
+                                emisión del token de primer acceso
+    transferencias.py          router (/api, CU-16) + router_propio (/api/v1/perfil/traslado, CU-03)
   mock/registraduria.py        Registraduría simulada
 alembic/versions/              migraciones
 docs/especificacion.md         la especificación completa
@@ -321,6 +441,9 @@ scripts/probar_reconciliacion.py  _reconciliar_transferencias en aislamiento, si
 scripts/probar_regreso_antes_de_purga.py  el mismo ciudadano vuelve antes de su propia purga
 scripts/probar_primer_acceso.py  consume el token de primer acceso y confirma el login
 scripts/probar_reenvio_primer_acceso.py  token vencido -> reenvio -> token viejo sin servir
+scripts/probar_carpeta_completa.py  CU-07/08/10/11/13/17 + perfil, y _purgar_documentos aislado
+scripts/probar_colision_email.py  _recibir_transferencia en aislamiento: colision de email_carpeta entre dos cedulas
+scripts/alta_entidad_emisora.py  alta, rotacion, revocacion y reactivacion de una entidad emisora (CU-13); no es una ruta publica
 scripts/mock_centralizador.py  centralizador falso en memoria, solo para esas pruebas
 Dockerfile                     imagen de la app; la usa Railway Y docker-compose.test.yml
 docker-compose.test.yml        solo para probar en Linux en esta maquina (Docker Desktop),
@@ -476,20 +599,23 @@ docker compose -f docker-compose.test.yml up --build -d postgres-a postgres-b mo
 docker compose -f docker-compose.test.yml up -d app-a app-b   # corren "alembic upgrade head" solos
 docker compose -f docker-compose.test.yml run --rm prueba-envio             # CU-03 + CU-16 normal
 docker compose -f docker-compose.test.yml run --rm prueba-reconciliacion   # sin esperar horas
+docker compose -f docker-compose.test.yml run --rm prueba-colision-email   # colision de email_carpeta entre dos cedulas
 docker compose -f docker-compose.test.yml run --rm prueba-regreso          # el mismo ciudadano vuelve
 docker compose -f docker-compose.test.yml logs app-b | grep -A5 "correo simulado"   # token de primer acceso
 docker compose -f docker-compose.test.yml run --rm prueba-primer-acceso \
   --base-url=http://app-b:8000 --token=<el-extraido-arriba> --usuario=<cedula>
 docker compose -f docker-compose.test.yml run --rm prueba-reenvio-primer-acceso   # token vencido + reenvio
+docker compose -f docker-compose.test.yml run --rm prueba-carpeta-completa   # CU-07/08/10/11/13/17 + perfil
 docker compose -f docker-compose.test.yml down -v             # -v: tambien borra postgres-a/b
 ```
 
 `scripts/probar_envio_transferencia.py` registra un ciudadano de prueba en `app-a`
 (cédula ficticia -- es seguro, nunca toca el MinTIC real), sube un documento, solicita
 el traslado a `test-operador-b`, y verifica en las dos bases de datos (consulta directa
-por SQL: `GET /api/v1/perfil` todavía no existe) que la transferencia quedó `CONFIRMADA`,
-el ciudadano llegó `ACTIVO` a `app-b` con su documento, y `app-a` quedó `TRASLADADO`.
-Probado de punta a punta el 2026-09-22, varias veces, de forma reproducible.
+por SQL: este script es anterior a `GET /api/v1/perfil`, no se actualizó para usarlo) que
+la transferencia quedó `CONFIRMADA`, el ciudadano llegó `ACTIVO` a `app-b` con su
+documento, y `app-a` quedó `TRASLADADO`. Probado de punta a punta el 2026-09-22, varias
+veces, de forma reproducible.
 
 `scripts/probar_reconciliacion.py` inserta una `transferencia` `ENVIADA` con
 `enviada_en` retrocedido en la base (no espera `TRANSFER_CONFIRM_TIMEOUT` de verdad) y
@@ -503,6 +629,14 @@ por las mismas filas.
 entrante con la misma cédula y el mismo `email_carpeta`, contra `app-a` viva. Verifica
 que el registro viejo (fila y objeto S3) se reemplaza y que el ciudadano llega a
 `ACTIVO` en vez de quedarse colgado en `TRASLADADO`.
+
+`scripts/probar_colision_email.py` siembra un ciudadano A ya `ACTIVO` con una
+`email_carpeta` conocida y llama directamente a `_recibir_transferencia` (sin pasar por
+`app-a` como servidor vivo, ni por `GovCarpeta` real: la colisión se detecta en el paso
+2, antes de llegar a tocar el centralizador) con una transferencia entrante para una
+cédula B distinta que trae ese mismo `citizenEmail`. Verifica que se rechace con un
+`ValueError` que nombra explícitamente la cédula A (no un `IntegrityError` opaco de
+Postgres), que no se cree ningún ciudadano para B, y que A quede intacto.
 
 `scripts/probar_primer_acceso.py` consume el token de primer acceso del ciudadano que
 `prueba-envio` acaba de dejar en `app-b` (extraído del log, no de la base: el token en
@@ -521,8 +655,32 @@ verificación manual (llamadas directas dentro del contenedor) de las ramas no
 cubiertas por el script: reenvío ignorado (ciudadano ya activo, cédula inexistente) y
 reenvío limitado por exceder `PRIMER_ACCESO_REENVIO_MAXIMO` en la ventana.
 
-Estas seis pruebas, en conjunto, encontraron y corrigieron los bugs reales descritos
-arriba en "Estado actual".
+`scripts/probar_carpeta_completa.py` registra su propio ciudadano de prueba en `app-a`
+y cubre, contra la app viva: los filtros de CU-07, la sustitución de CU-10 (verifica que
+el documento viejo sigue consultable como `REEMPLAZADO`, fuera del listado y de la
+cuota), el borrado diferido de CU-08 (con sus rechazos: documento certificado y
+documento ya reemplazado), el rechazo de CU-11 al pedir autenticación sobre un
+documento `REEMPLAZADO` (409) o `ELIMINADO` (404), el depósito de CU-13 por una entidad
+emisora sembrada directamente en la base (documento certificado, `entidad_emisora`
+tomado de la credencial y no de lo declarado, sin impacto en la cuota, sustituyendo al
+último documento temporal de la carpeta, y sin poder eliminarse después), la revocación
+de esa entidad (401 con la misma clave de siempre) y su reactivación (vuelve a
+funcionar, sin rotar), CU-17 (la notificación de registro y la del depósito de la
+entidad aparecen en la bandeja, y se puede marcar una como leída) y `GET`/`PATCH
+/api/v1/perfil`. Al final prueba `_purgar_documentos` en aislamiento, igual patrón que
+`probar_reconciliacion.py`. Probado de punta a punta el 2026-09-22.
+
+Las primeras seis, en conjunto, encontraron y corrigieron los bugs reales descritos
+arriba en "Estado actual". `probar_carpeta_completa.py` no encontró un bug nuevo por sí
+sola -- confirmó que CU-07/08/10/11/13/17 y perfil funcionan como se diseñaron; la
+corrección de `autorizacion.documento_id` (`ON DELETE CASCADE`, ver arriba) se hizo por
+revisión de código, anticipando el mismo tipo de bug ya visto con
+`transferencia.ciudadano_id`, no porque la prueba la haya expuesto (CU-18 sigue sin
+implementar, así que hoy no hay ninguna fila `autorizacion` que pudiera activarlo).
+`probar_colision_email.py` tampoco encontró un bug nuevo: confirmó la política de
+colisión de `email_carpeta` entre dos cédulas distintas, decidida y documentada como
+parte de esta misma tarea (docs/especificacion.md, "Interoperabilidad entre
+operadores"), no un comportamiento que ya existiera sin probar.
 
 ## Convenciones
 

@@ -2,7 +2,10 @@
 
 Ver docs/especificacion.md, seccion "Modelo de datos", para el detalle de campos,
 estados y cardinalidades. Tablas: ciudadano, documento, outbox, transferencia,
-operador_cache, autorizacion, auditoria.
+operador_cache, autorizacion, auditoria. `notificacion` (CU-17) y `entidad_emisora`
+(CU-13) no estan en esa seccion del documento -- ninguno de los casos de uso
+CU-04/07/08/10/13/17 tiene especificacion detallada en esta entrega (ver "Casos de uso
+con especificacion detallada").
 """
 
 from __future__ import annotations
@@ -50,6 +53,28 @@ class EstadoTransferencia(str, enum.Enum):
 class EstadoTotp(str, enum.Enum):
     PENDIENTE = "PENDIENTE"
     HABILITADO = "HABILITADO"
+
+
+class EstadoDocumento(str, enum.Enum):
+    ACTIVO = "ACTIVO"
+    # CU-10: reemplazado por una version nueva via `sustituye_a` -- se conserva la fila y
+    # el objeto del bucket como historia (nunca se purga), pero deja de listarse y de
+    # contar contra la cuota.
+    REEMPLAZADO = "REEMPLAZADO"
+    # CU-08: borrado a solicitud del ciudadano. Borrado diferido, igual patron que
+    # `transferencia`: se marca aqui y `app.interoperabilidad.outbox._purgar_documentos`
+    # lo purga fisicamente (fila y objeto) al cumplirse `purgar_despues_de`.
+    ELIMINADO = "ELIMINADO"
+
+
+class EstadoEntidadEmisora(str, enum.Enum):
+    ACTIVA = "ACTIVA"
+    # Revocada: deja de poder autenticarse de inmediato (app.documentos.entidades.
+    # entidad_actual la rechaza), pero la fila se conserva -- su historia (auditoria,
+    # documento.entidad_emisora de lo que ya deposito) no depende de que siga activa.
+    # Reversible: scripts/alta_entidad_emisora.py reactivar la vuelve a ACTIVA, con la
+    # misma clave que ya tenia (revocar no la invalida, solo bloquea su uso).
+    REVOCADA = "REVOCADA"
 
 
 class Ciudadano(Base):
@@ -107,6 +132,11 @@ class Ciudadano(Base):
     # de solo-insercion de Auditoria lo rechaza. Con passive_deletes=True el ORM no toca
     # esas filas: deja que Postgres aplique el ON DELETE SET NULL de la propia FK.
     auditorias: Mapped[list["Auditoria"]] = relationship(back_populates="ciudadano", passive_deletes=True)
+    # passive_deletes=True: notificacion.ciudadano_id es ON DELETE CASCADE (a diferencia
+    # de auditoria, una notificacion no tiene valor de rastro propio una vez que el
+    # ciudadano se purga -- Postgres las borra solo, sin que el ORM tenga que nulificarlas
+    # primero).
+    notificaciones: Mapped[list["Notificacion"]] = relationship(back_populates="ciudadano", passive_deletes=True)
 
 
 class Documento(Base):
@@ -135,10 +165,33 @@ class Documento(Base):
     respuesta_centralizador: Mapped[str | None] = mapped_column(Text)
     autenticacion_actualizada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     firma_valida: Mapped[bool | None] = mapped_column(Boolean)
+    # ACTIVO por defecto. CU-10 pone REEMPLAZADO en el documento viejo al sustituirlo (en
+    # vez de borrarlo, para no perder su historia); CU-08 pone ELIMINADO al borrarlo a
+    # solicitud del ciudadano. server_default: la tabla ya tenia filas antes de esta
+    # columna, y una columna NOT NULL nueva necesita un valor para ellas.
+    estado: Mapped[EstadoDocumento] = mapped_column(
+        PgEnum(EstadoDocumento, name="estado_documento"),
+        default=EstadoDocumento.ACTIVO,
+        server_default=EstadoDocumento.ACTIVO.value,
+    )
+    # CU-10: el documento que este reemplaza, si llego por sustitucion explicita
+    # (`sustituye_a` en la carga). ON DELETE SET NULL: si el documento reemplazado se
+    # llegara a purgar por otra via, este enlace no debe bloquear ese borrado.
+    sustituye_a_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("documento.id", ondelete="SET NULL"), index=True
+    )
+    # CU-08: cuando se cumple, `_purgar_documentos` borra la fila y el objeto. NULL
+    # mientras el documento sigue ACTIVO o esta REEMPLAZADO (ese nunca se purga).
+    purgar_despues_de: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     ciudadano: Mapped["Ciudadano"] = relationship(back_populates="documentos")
-    autorizaciones: Mapped[list["Autorizacion"]] = relationship(back_populates="documento")
+    # passive_deletes=True: la purga fisica de un documento (CU-08, `_purgar_documentos`)
+    # lo borra directamente; sin esto, SQLAlchemy intentaria nulificar esta coleccion con
+    # un UPDATE de ORM antes del DELETE aunque no exista ninguna autorizacion todavia
+    # (CU-18 sigue sin implementar). ON DELETE CASCADE: una autorizacion sobre un
+    # documento que ya no existe no tiene ningun proposito.
+    autorizaciones: Mapped[list["Autorizacion"]] = relationship(back_populates="documento", passive_deletes=True)
 
 
 class Outbox(Base):
@@ -200,13 +253,61 @@ class Autorizacion(Base):
     __tablename__ = "autorizacion"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    documento_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documento.id"), index=True)
+    documento_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("documento.id", ondelete="CASCADE"), index=True)
     tercero: Mapped[str] = mapped_column(String(255))
     otorgada_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     vence_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revocada_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     documento: Mapped["Documento"] = relationship(back_populates="autorizaciones")
+
+
+class Notificacion(Base):
+    """CU-17: centro de notificaciones. `app.notificaciones.correo.enviar_correo` crea
+    una fila aqui cada vez que "envia" algo (registro, primer acceso, reenvio); no hay
+    un mecanismo paralelo para esto."""
+
+    __tablename__ = "notificacion"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    ciudadano_id: Mapped[int] = mapped_column(ForeignKey("ciudadano.id", ondelete="CASCADE"), index=True)
+    asunto: Mapped[str] = mapped_column(String(255))
+    cuerpo: Mapped[str] = mapped_column(Text)
+    leida_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    ciudadano: Mapped["Ciudadano"] = relationship(back_populates="notificaciones")
+
+
+class EntidadEmisora(Base):
+    """CU-04 minimo: solo lo que CU-13 necesita para depositar documentos certificados.
+    No es el registro completo de CU-04 (RF9, entidad publica o empresa privada se
+    registran ante el operador) -- no hay una ruta publica que cree filas aqui, solo
+    `scripts/alta_entidad_emisora.py` (acceso directo a la base, fuera de la API), que
+    tambien revoca y reactiva. La fila nunca se borra: revocar bloquea la autenticacion
+    de inmediato sin tocar su historia (auditoria, `documento.entidad_emisora` de lo ya
+    depositado)."""
+
+    __tablename__ = "entidad_emisora"
+
+    # Identificacion de la entidad (p. ej. NIT), no un serial: es lo que el script de
+    # alta recibe y lo que queda en `auditoria.detalle` para rastrear quien deposito que.
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    nombre: Mapped[str] = mapped_column(String(255))
+    # Credencial propia de la entidad. Mismo esquema que el token de primer acceso
+    # (app.identidad.token_acceso): valor de alta entropia, hasheado con SHA-256 para
+    # poder buscarlo por igualdad -- no hace falta un hash costoso porque el secreto no
+    # lo elige un humano. unique=True: la entidad se resuelve por su clave, no hace
+    # falta un id de entidad aparte en cada peticion.
+    api_key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # ACTIVA por defecto. server_default: la tabla ya podia tener filas antes de esta
+    # columna, y una columna NOT NULL nueva necesita un valor para ellas.
+    estado: Mapped[EstadoEntidadEmisora] = mapped_column(
+        PgEnum(EstadoEntidadEmisora, name="estado_entidad_emisora"),
+        default=EstadoEntidadEmisora.ACTIVA,
+        server_default=EstadoEntidadEmisora.ACTIVA.value,
+    )
+    creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Auditoria(Base):

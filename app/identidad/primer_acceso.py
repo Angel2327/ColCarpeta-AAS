@@ -254,6 +254,8 @@ async def reenviar_primer_acceso(
         ciudadano.token_primer_acceso_vence_en = vence_en
 
         await enviar_correo(
+            session,
+            ciudadano_id=ciudadano.id,
             destinatario=ciudadano.email_personal,
             asunto="Nuevo enlace para establecer tu contrasena en ColCarpeta",
             cuerpo=(

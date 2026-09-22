@@ -252,6 +252,14 @@ Se agregan dos elementos que los operadores que no los reconozcan ignoran sin ro
 
 `citizenEmail` se adopta como `email_carpeta` del ciudadano tal como llega, sin importar el dominio y sin generar una dirección propia (AD-10). Si `contactEmail` no viene, `email_personal` queda vacío y se solicita al ciudadano en su primer inicio de sesión. Si `citizenEmail` llega vacío o con formato inválido —operador de origen que no respeta el acuerdo—, se genera una dirección propia con el patrón habitual y se deja constancia en la auditoría.
 
+### Colisión de `email_carpeta` entre dos ciudadanos distintos
+
+Puede llegar una transferencia cuyo `citizenEmail` ya es la `email_carpeta` de un ciudadano *distinto*, ya afiliado a ColCarpeta (mismo nombre y año de registro en dos operadores de origen distintos que generaron la misma dirección por el patrón habitual, por ejemplo). Es una colisión real, no un error de formato: AD-10 fija esa dirección como identificador permanente de cada ciudadano, así que no hay forma de inventarle una alterna a ninguno de los dos sin romper esa garantía.
+
+**Política.** La recepción se rechaza. El ciudadano ya afiliado en ColCarpeta no se toca —ya tiene una relación establecida con este operador—; el que llega por transferencia no se acepta con esa dirección. El rechazo sigue el mismo camino que cualquier otro motivo de rechazo de esta recepción: se responde `confirmAPI` con `req_status = 0`, y el operador de origen recupera al ciudadano invocando su propio `registerCitizen`. La única diferencia frente a un rechazo genérico es el diagnóstico: queda registrado explícitamente como colisión de dirección contra la cédula que ya la tiene, no como un fallo de base de datos sin explicación.
+
+Esta colisión es distinta de la que ocurre cuando el mismo ciudadano regresa a ColCarpeta antes de que se cumpla la purga diferida de su traslado anterior (ver "Borrado" y CLAUDE.md): ahí la dirección coincide contra el **propio** registro previo de la misma cédula, así que ese registro se reemplaza en vez de rechazarse. La política de esta sección aplica únicamente cuando la cédula que ya tiene la dirección es **distinta** de la que trae la transferencia entrante.
+
 ### Orden de envío
 
 1. Generar enlaces firmados con vigencia de 24 horas para todos los documentos del ciudadano.
@@ -870,6 +878,8 @@ El supuesto de la entrega 1 habilita el almacenamiento en nube fuera del país s
 Como `citizenEmail` queda ocupado por la dirección del operador, el correo personal de contacto se transporta en la extensión aditiva `contactEmail`, que los operadores que no la reconozcan ignoran sin romperse (AD-09).
 
 Un ciudadano recibido por transferencia conserva una dirección cuyo dominio no es `carpetacolombia.co`. Esa dirección es la que usa para iniciar sesión y no se le aplica la resolución de colisiones del patrón de generación, que solo opera sobre direcciones propias.
+
+La inmutabilidad tiene un costo declarado: si dos ciudadanos distintos llegan a generar la misma dirección en sus operadores de origen, ColCarpeta no puede resolver la colisión inventándole una alterna a ninguno de los dos sin violar esta misma decisión. La política para ese caso (rechazar la recepción entrante, nunca la ya afiliada) está en "Interoperabilidad entre operadores" > "Colisión de `email_carpeta` entre dos ciudadanos distintos".
 
 Los supuestos de la entrega 1 sobre la cuenta de correo se mantienen sin cambios: la dirección sigue siendo inmutable de forma permanente, se conserva en el traslado según el criterio de aceptación de RF8, y entra en el alcance de la portabilidad de datos de RNF16.
 

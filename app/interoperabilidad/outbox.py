@@ -33,6 +33,9 @@ depender de un scheduler aparte (AD-07: sin broker de mensajeria dedicado):
     siempre ("Aceptacion de confirmaciones").
   - Purga fisicamente las transferencias `CONFIRMADA` cuyo `purgar_despues_de` ya paso
     ("Borrado").
+  - Purga fisicamente los documentos `ELIMINADO` (CU-08) cuyo `purgar_despues_de` ya
+    paso. Los documentos `REEMPLAZADO` (CU-10) nunca entran aqui: se conservan como
+    historia, sin fecha de purga.
 Ver `_tareas_periodicas`.
 """
 
@@ -58,6 +61,7 @@ from app.models import (
     Documento,
     EstadoAutenticacionDocumento,
     EstadoCiudadano,
+    EstadoDocumento,
     EstadoOutbox,
     EstadoTransferencia,
     OperadorCache,
@@ -154,6 +158,10 @@ async def _recibir_transferencia(gov: GovCarpeta, payload: dict) -> None:
 
     La validacion de firma digital (paso 4 de "Orden de recepcion") queda pendiente de
     CU-09 (requiere pyHanko): `firma_valida` se deja en NULL, igual que A1 de CU-05.
+
+    Paso 2 tambien rechaza (ValueError, no reintentable) si `citizenEmail` ya pertenece
+    a OTRA cedula distinta ya afiliada aqui: colision real entre dos ciudadanos
+    distintos, ver docs/especificacion.md "Tolerancia al recibir".
     """
     from app.config import get_config
     from app.db import SessionLocal
@@ -249,6 +257,28 @@ async def _recibir_transferencia(gov: GovCarpeta, payload: dict) -> None:
                 )
             else:
                 email_carpeta = citizen_email
+                # Politica de colision de email_carpeta entre DOS CEDULAS DISTINTAS
+                # (docs/especificacion.md, "Tolerancia al recibir"; distinto del paso 1b
+                # de arriba, que resuelve el regreso del MISMO ciudadano). AD-10 fija
+                # email_carpeta como identificador permanente de cada ciudadano: no se
+                # le puede inventar una direccion alterna ni al que ya tenemos ni al que
+                # esta llegando, asi que aceptar a los dos es imposible. Se rechaza la
+                # recepcion (el que ya esta afiliado aqui no se toca) en vez de dejar
+                # que la UNIQUE de la base lo tumbe con un IntegrityError sin
+                # diagnostico -- mismo efecto que cualquier otro rechazo de esta
+                # funcion (ValueError -> RECHAZO -> req_status=0, el origen recupera al
+                # ciudadano con su propio registerCitizen).
+                propietario_actual = (
+                    await session.execute(
+                        select(Ciudadano.id).where(Ciudadano.email_carpeta == email_carpeta, Ciudadano.id != cedula)
+                    )
+                ).scalar_one_or_none()
+                if propietario_actual is not None:
+                    raise ValueError(
+                        f"citizenEmail {email_carpeta} ya pertenece a la cedula {propietario_actual} en "
+                        f"ColCarpeta; no se puede recibir a {cedula} con esa direccion (colision real "
+                        "entre dos ciudadanos distintos, AD-10 no permite generarle una alterna a ninguno)"
+                    )
             session.add(
                 Ciudadano(
                     id=cedula,
@@ -528,6 +558,8 @@ async def _activar_ciudadano(
             from app.notificaciones.correo import enviar_correo
 
             await enviar_correo(
+                session,
+                ciudadano_id=ciudadano.id,
                 destinatario=ciudadano.email_personal,
                 asunto="Tu carpeta en ColCarpeta esta activa",
                 cuerpo=(
@@ -604,6 +636,8 @@ async def _emitir_token_primer_acceso(session: AsyncSession, ciudadano: Ciudadan
     ciudadano.token_primer_acceso_vence_en = vence_en
 
     await enviar_correo(
+        session,
+        ciudadano_id=ciudadano.id,
         destinatario=ciudadano.email_personal,
         asunto="Establece la contrasena de tu carpeta en ColCarpeta",
         cuerpo=(
@@ -1151,6 +1185,57 @@ async def _purgar_transferencias(session_factory: async_sessionmaker[AsyncSessio
     return purgadas
 
 
+async def _purgar_documentos(session_factory: async_sessionmaker[AsyncSession]) -> int:
+    """CU-08, "Borrado": purga fisica de documentos que el ciudadano elimino y cuyo
+    `purgar_despues_de` ya paso. Borra la fila y el objeto del bucket; deja registro en
+    auditoria. Un documento REEMPLAZADO (CU-10) nunca tiene `purgar_despues_de` --
+    nunca aparece aqui, se conserva indefinidamente como historia."""
+    from app.db import SessionLocal
+    from app.documentos.almacenamiento import FalloAlmacenamiento, eliminar_objeto
+
+    ahora = datetime.now(timezone.utc)
+    purgados = 0
+
+    async with session_factory() as session:
+        vencidos = (
+            await session.execute(
+                select(Documento.id).where(
+                    Documento.estado == EstadoDocumento.ELIMINADO,
+                    Documento.purgar_despues_de.is_not(None),
+                    Documento.purgar_despues_de <= ahora,
+                )
+            )
+        ).scalars().all()
+
+    for documento_id in vencidos:
+        async with SessionLocal() as session, session.begin():
+            documento = await session.get(Documento, documento_id, with_for_update=True)
+            if documento is None or documento.estado != EstadoDocumento.ELIMINADO:
+                continue  # otra pasada ya lo tomo (con varias replicas corriendo)
+
+            clave = documento.s3_key
+            ciudadano_id = documento.ciudadano_id
+            await session.delete(documento)
+            session.add(
+                Auditoria(
+                    actor="sistema",
+                    accion="documento.purgado",
+                    recurso=str(documento_id),
+                    ciudadano_id=ciudadano_id,
+                    correlation_id=None,
+                    detalle={},
+                )
+            )
+            await session.flush()
+        try:
+            eliminar_objeto(clave=clave)
+        except FalloAlmacenamiento:
+            logger.warning("no se pudo borrar el objeto %s al purgar el documento %s", clave, documento_id)
+        purgados += 1
+
+    return purgados
+
+
 async def _tareas_periodicas(gov: GovCarpeta, session_factory: async_sessionmaker[AsyncSession]) -> None:
     """Mantenimiento periodico (ver docstring del modulo). Cada paso es independiente:
     que uno falle no debe bloquear los otros ni tumbar el bucle principal de outbox."""
@@ -1173,6 +1258,13 @@ async def _tareas_periodicas(gov: GovCarpeta, session_factory: async_sessionmake
             logger.info("purga de transferencias: %s purgada(s)", purgadas)
     except Exception:
         logger.exception("fallo purgando transferencias confirmadas")
+
+    try:
+        purgados_docs = await _purgar_documentos(session_factory)
+        if purgados_docs:
+            logger.info("purga de documentos: %s purgado(s)", purgados_docs)
+    except Exception:
+        logger.exception("fallo purgando documentos eliminados")
 
 
 async def procesar_lote(
