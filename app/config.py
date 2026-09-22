@@ -55,6 +55,15 @@ class Config(BaseSettings):
     transfer_confirm_timeout: int = 14_400
     purge_delay_days: int = 30
     outbox_intervalo_segundos: int = 10
+    # Umbral para revivir filas de outbox colgadas en EN_PROCESO (el proceso que las
+    # tomo murio, se colgo, o hubo un redespliegue a mitad de ejecucion). 15 minutos da
+    # margen de sobra frente al peor caso legitimo (una transferencia con hasta 200
+    # documentos, cada uno con su propio limite duro de red de ~1 minuto): un umbral
+    # mas corto arriesga revivir una entrada que en realidad sigue viva y en curso.
+    outbox_en_proceso_maximo_segundos: int = 900
+    # "Parametros y limites" > Documentos: limites de una transferencia entrante.
+    transferencia_documentos_maximo: int = 200
+    transferencia_tamano_maximo_bytes: int = 500 * 1024 * 1024
 
     registraduria_api_key: str = "clave-interna-de-desarrollo"
 

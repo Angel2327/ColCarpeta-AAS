@@ -1,6 +1,6 @@
 # Especificación Técnica — Operador ColCarpeta
 
-2026-09-19 · @Someone
+2026-09-20 · Jorge Andrés Duran Cotamo, Angel David Martínez Doria, Valeria Cardona Urrea
 
 ColCarpeta es el Operador de Carpeta Ciudadana del equipo, registrado ante el centralizador del MinTIC con identificador `6aaeb415b765590002607402`. Este documento fija la identificación del operador, la arquitectura, el stack, la infraestructura de despliegue, los contratos de integración y las reglas de operación.
 
@@ -14,6 +14,8 @@ ColCarpeta es el Operador de Carpeta Ciudadana del equipo, registrado ante el ce
 | Curso | Arquitecturas Avanzadas de Software |
 | Registro verificado en el directorio | Sí, vía `GET /apis/getOperators` |
 | Endpoint de transferencia publicado | No |
+| Repositorio | `https://github.com/Angel2327/ColCarpeta-AAS` |
+| Aplicación desplegada | `https://colcarpeta-aas-production.up.railway.app` |
 
 El identificador viaja como `operatorId` en `registerCitizen` y `unregisterCitizen`, y como `idOperator` en `registerTransferEndPoint`. Se almacena en la variable de entorno `OPERATOR_ID` y nunca se escribe en el código.
 
@@ -110,21 +112,21 @@ La dirección estable del servicio es el dominio que asigna Railway, no una dire
 | `/health` | GET | Monitoreo |
 | `/docs` | GET | Documentación OpenAPI |
 
-El dominio asignado se registra en `PUBLIC_BASE_URL` y es el que se publica con `registerTransferEndPoint`. Ese registro se ejecuta únicamente cuando las dos rutas de transferencia responden correctamente.
+El dominio asignado es `colcarpeta-aas-production.up.railway.app`. Se registra en `PUBLIC_BASE_URL` y es el que se publicará con `registerTransferEndPoint`. Ese registro se ejecuta únicamente cuando las dos rutas de transferencia responden correctamente.
 
 ### Variables de entorno
 
 ```
 DATABASE_URL=postgresql://...            # Supabase, sección Database
 S3_ENDPOINT=https://<proyecto>.supabase.co/storage/v1/s3
-S3_REGION=us-east-1
+S3_REGION=us-west-2
 S3_ACCESS_KEY=...                        # Supabase, seccion Storage
 S3_SECRET_KEY=...
 S3_BUCKET=documentos
 OPERATOR_ID=6aaeb415b765590002607402
 OPERATOR_NAME=ColCarpeta
 GOVCARPETA_URL=https://govcarpeta-apis-4905ff3c005b.herokuapp.com
-PUBLIC_BASE_URL=https://<subdominio>.up.railway.app
+PUBLIC_BASE_URL=https://colcarpeta-aas-production.up.railway.app
 JWT_PRIVATE_KEY=...
 JWT_PUBLIC_KEY=...
 PRESIGNED_URL_TTL_AUTH=900               # segundos, autenticacion de documentos
@@ -222,7 +224,7 @@ sequenceDiagram
   "citizenName": "Carlos Castro",
   "citizenEmail": "carlos@carpetacolombia.co",
   "urlDocuments": { "Diploma de grado": "https://...", "Cedula": "https://..." },
-  "confirmAPI": "https://<subdominio>.up.railway.app/api/transferCitizenConfirm"
+  "confirmAPI": "https://colcarpeta-aas-production.up.railway.app/api/transferCitizenConfirm"
 }
 ```
 
@@ -242,16 +244,19 @@ Se agregan dos elementos que los operadores que no los reconozcan ignoran sin ro
 | --- | --- |
 | Título del documento | Se usa como clave dentro de `urlDocuments`, en lugar de `URL1`, `URL2` |
 | Metadatos | Arreglo adicional `documentsMetadata` con tipo, entidad emisora, fecha y estado de certificación |
+| Correo personal de contacto | Campo adicional `contactEmail`. El campo acordado `citizenEmail` transporta la cuenta del operador, que es el identificador inmutable del ciudadano (AD-10) |
 
 ### Tolerancia al recibir
 
 `urlDocuments` se acepta en tres formas y se normaliza internamente: texto suelto, arreglo de textos y objeto de clave a valor. Los campos desconocidos se ignoran. Si `documentsMetadata` no viene, el documento se almacena marcado como `metadatos no suministrados por el operador de origen`.
 
+`citizenEmail` se adopta como `email_carpeta` del ciudadano tal como llega, sin importar el dominio y sin generar una dirección propia (AD-10). Si `contactEmail` no viene, `email_personal` queda vacío y se solicita al ciudadano en su primer inicio de sesión. Si `citizenEmail` llega vacío o con formato inválido —operador de origen que no respeta el acuerdo—, se genera una dirección propia con el patrón habitual y se deja constancia en la auditoría.
+
 ### Orden de envío
 
 1. Generar enlaces firmados con vigencia de 24 horas para todos los documentos del ciudadano.
 2. Invocar `unregisterCitizen` en el centralizador.
-3. Invocar `POST /api/transferCitizen` del operador destino, resuelto por `transferAPIURL` del directorio.
+3. Invocar `POST /api/transferCitizen` del operador destino, resuelto por `transferAPIURL` del directorio, enviando `email_carpeta` en `citizenEmail` y `email_personal` en `contactEmail`.
 4. Marcar la transferencia como `ENVIADA` y esperar la confirmación.
 5. Al recibir `req_status = 1`, marcar como `CONFIRMADA` y programar la purga.
 6. Al recibir `req_status = 0`, invocar `registerCitizen` para recuperar al ciudadano y notificarle.
@@ -259,10 +264,11 @@ Se agregan dos elementos que los operadores que no los reconozcan ignoran sin ro
 ### Orden de recepción
 
 1. Validar tamaño y cantidad de documentos contra los límites configurados.
-2. Descargar todos los archivos y almacenarlos en el bucket.
-3. Validar las firmas digitales.
-4. Invocar `validateCitizen` y `registerCitizen` en el centralizador.
-5. Invocar `confirmAPI` con `req_status = 1` solo cuando los pasos anteriores hayan terminado. Ante cualquier fallo, invocar con `req_status = 0`.
+2. Crear el ciudadano adoptando `citizenEmail` como su `email_carpeta`, sin generar una dirección propia.
+3. Descargar todos los archivos y almacenarlos en el bucket.
+4. Validar las firmas digitales.
+5. Invocar `validateCitizen` y `registerCitizen` en el centralizador.
+6. Invocar `confirmAPI` con `req_status = 1` solo cuando los pasos anteriores hayan terminado. Ante cualquier fallo, invocar con `req_status = 0`.
 
 ### Aceptación de confirmaciones
 
@@ -371,7 +377,7 @@ El borrado es diferido. Al confirmarse una transferencia, el ciudadano y sus doc
 
 Hacia el centralizador solo salen identificadores, nombre, dirección, correo y enlaces. Ningún archivo se transmite al centralizador. Los secretos y credenciales viven en variables de entorno y no se registran en los logs.
 
-## Flujos a implementar
+## Flujos implementados
 
 ### 1. Registro del ciudadano
 
@@ -521,12 +527,13 @@ Cada petición recibe un identificador de correlación que se propaga a las llam
 | Elemento | Estado |
 | --- | --- |
 | Registro del operador ante el MinTIC | Hecho |
-| Proyecto Supabase, base de datos y bucket | Pendiente |
-| Despliegue en Railway | Pendiente |
-| Flujo 1, registro del ciudadano | Pendiente |
-| Flujo 2, inicio de sesión | Pendiente |
-| Flujo 3, carga de documentos | Pendiente |
-| Flujo 4, autenticación ante GovCarpeta | Pendiente |
+| Proyecto Supabase, base de datos y bucket | Hecho |
+| Despliegue en Railway | Hecho, `https://colcarpeta-aas-production.up.railway.app` |
+| Flujo 1, registro del ciudadano (CU-01) | Hecho y probado contra el centralizador real |
+| Flujo 2, inicio de sesión (CU-02) | Hecho |
+| Flujo 3, carga de documentos (CU-05) | Hecho |
+| Flujo 4, autenticación ante GovCarpeta (CU-11) | Hecho y probado contra el centralizador real |
+| Validación de firma digital (CU-09) | Sin implementar; requiere validar firmas PAdES en el PDF |
 | Publicación de endpoints de transferencia | Pendiente, condicionada a que las rutas respondan |
 | Transferencia entre operadores | Diseñada, sin implementar |
 | Notificaciones | Alcance reducido al correo de registro |
@@ -550,7 +557,6 @@ Cada petición recibe un identificador de correlación que se propaga a las llam
 - Proveedor de correo y de SMS.
 - Recepción real de correo entrante en el dominio `carpetacolombia.co`.
 - Dirección y correo de contacto usados en el registro del operador.
-- Subdominio definitivo de Railway.
 
 ## Vista de despliegue
 
@@ -851,27 +857,25 @@ El supuesto de la entrega 1 habilita el almacenamiento en nube fuera del país s
 
 ### AD-10. Ciclo de vida de la cuenta de correo del ciudadano
 
-**Problema.** RF5 genera una dirección `nombre.apellido.año@carpetacolombia.co` y el supuesto de la entrega 1 la declara inmutable incluso tras un traslado de operador. El dominio es infraestructura de ColCarpeta, y el orden de envío de una transferencia purga todos los datos del ciudadano.
+**Problema.** El caso de estudio establece que la cuenta de correo generada para cada ciudadano no puede cambiarse después del primer registro. El dominio `carpetacolombia.co` es infraestructura de ColCarpeta, y el orden de envío de una transferencia purga todos los datos del ciudadano, incluida su dirección. Sostener un buzón activo para una persona que ya no es usuaria del operador no es viable.
 
-**Alternativas.** Mantener un reenvío permanente hacia el operador destino; asumir que el dominio es nacional y lo enruta el MinTIC; tratar la dirección como identificador y no como buzón; eliminar la dirección con el traslado.
+**Alternativas.** Mantener un reenvío permanente hacia el operador destino; asumir que el dominio es nacional y lo enruta el MinTIC; eliminar la dirección con el traslado; tratar la dirección como identificador portable del ciudadano y no como buzón.
 
-**Decisión.** La dirección se genera en el registro, es inmutable mientras el ciudadano esté afiliado a ColCarpeta, y se elimina cuando el ciudadano se traslada a otro operador. El operador destino asigna la suya.
+**Decisión.** La dirección se trata como identificador del ciudadano, no como buzón. Se genera una sola vez, en el primer registro ante cualquier operador; viaja en el campo `citizenEmail` del mensaje `transferCitizen`; y el operador que recibe al ciudadano la adopta tal cual, en lugar de generar una nueva. ColCarpeta no presta servicio de buzón sobre la dirección de un ciudadano que ya no está afiliado, y la dirección desaparece de sus registros con la purga diferida.
 
-**Justificación.** El reenvío permanente obliga a ColCarpeta a operar infraestructura indefinidamente para personas que ya no son sus usuarios. El dominio nacional supone una capacidad que la API del MinTIC no ofrece. La eliminación es la única alternativa consistente con la purga de datos tras una transferencia confirmada.
+**Justificación.** Es la única alternativa que cumple la inmutabilidad que exige el caso de estudio sin obligar a ColCarpeta a operar infraestructura de correo de forma indefinida para personas que ya no son sus usuarias. El reenvío permanente impone ese costo; el dominio nacional supone una capacidad de enrutamiento que la API del MinTIC no ofrece. Es además la lectura coherente con el formato de intercambio acordado entre los equipos, cuyo ejemplo de `citizenEmail` es precisamente una dirección del operador y no un correo personal.
 
-**Consecuencias.** Se abandona la inmutabilidad de la dirección a través de operadores. Tres puntos de la entrega 1 quedan modificados y deben corregirse en el documento final:
+**Consecuencias.** La inmutabilidad se sostiene por protocolo y no por infraestructura: depende de que el operador destino adopte el valor recibido. ColCarpeta cumple su parte en las dos direcciones —lo envía al transferir y lo adopta al recibir—, pero no puede garantizar el comportamiento de terceros; ese es un riesgo declarado de la solución y la razón por la que la dirección se registra en la auditoría antes de la purga.
 
-| Punto de la entrega 1 | Cambio |
-| --- | --- |
-| Criterio de aceptación de RF8 | Deja de conservarse la cuenta de correo en el traslado |
-| RNF16, portabilidad de datos | La cuenta de correo sale del alcance de lo que se migra |
-| Supuestos, sección 5 | La inmutabilidad aplica mientras dure la afiliación, no de forma permanente |
+Como `citizenEmail` queda ocupado por la dirección del operador, el correo personal de contacto se transporta en la extensión aditiva `contactEmail`, que los operadores que no la reconozcan ignoran sin romperse (AD-09).
 
-En el mensaje `transferCitizen`, el campo `citizenEmail` transporta el correo personal del ciudadano, no la dirección `@carpetacolombia.co`. La eliminación de la dirección ocurre junto con la purga diferida, no en el momento del envío.
+Un ciudadano recibido por transferencia conserva una dirección cuyo dominio no es `carpetacolombia.co`. Esa dirección es la que usa para iniciar sesión y no se le aplica la resolución de colisiones del patrón de generación, que solo opera sobre direcciones propias.
+
+Los supuestos de la entrega 1 sobre la cuenta de correo se mantienen sin cambios: la dirección sigue siendo inmutable de forma permanente, se conserva en el traslado según el criterio de aceptación de RF8, y entra en el alcance de la portabilidad de datos de RNF16.
 
 ## Flujos alternos y de excepción
 
-Complemento de la sección *Flujos a implementar*, que contiene los flujos básicos. Insumo para las especificaciones de caso de uso.
+Complemento de la sección *Flujos implementados*, que contiene los flujos básicos. Insumo para las especificaciones de caso de uso.
 
 ### CU-01. Registrarse en el operador
 
@@ -941,7 +945,7 @@ Complemento de la sección *Flujos a implementar*, que contiene los flujos bási
 
 ## Contrato de la API propia
 
-Prefijo `/api/v1` para todo lo que consume el portal. Autenticación por `Authorization: Bearer <jwt>` salvo donde se indique. Las rutas de transferencia entre operadores viven fuera de este prefijo, en `/api`, porque su forma la fija el acuerdo del ecosistema.
+Base `https://colcarpeta-aas-production.up.railway.app`, con prefijo `/api/v1` para todo lo que consume el portal. La documentación OpenAPI viva está en `/docs`. Autenticación por `Authorization: Bearer <jwt>` salvo donde se indique. Las rutas de transferencia entre operadores viven fuera de este prefijo, en `/api`, porque su forma la fija el acuerdo del ecosistema.
 
 ### Ciudadano y sesión
 
@@ -1122,7 +1126,7 @@ Todos estos valores viven en variables de entorno. Los de la tabla son los valor
 
 ### Cuenta de correo generada
 
-El patrón es `nombre.apellido.año@carpetacolombia.co`, normalizado a minúsculas y sin tildes ni caracteres especiales. `año` es el año del registro. Ante colisión se agrega un sufijo numérico incremental: `carlos.castro.2026.2@carpetacolombia.co`. La dirección es inmutable mientras dure la afiliación y se elimina con el traslado.
+El patrón es `nombre.apellido.año@carpetacolombia.co`, normalizado a minúsculas y sin tildes ni caracteres especiales. `año` es el año del registro. Ante colisión se agrega un sufijo numérico incremental: `carlos.castro.2026.2@carpetacolombia.co`. La dirección se genera una sola vez, es inmutable de forma permanente y acompaña al ciudadano cuando se traslada a otro operador (AD-10). Un ciudadano que llega por transferencia conserva la dirección que trae y no se le genera una nueva.
 
 ## Registraduría simulada
 

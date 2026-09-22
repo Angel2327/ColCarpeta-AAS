@@ -25,10 +25,11 @@ Usa `alembic revision --autogenerate` y valida contra la base real: hay Postgres
 ### Construido
 
 `app/config.py`, `app/db.py`, `app/errors.py` · `app/models.py` con las 7 tablas ·
-migraciones aplicadas · `app/interoperabilidad/` (cliente del centralizador y bandeja
-de salida) · `app/mock/registraduria.py` · `app/identidad/` (registro, correo,
-seguridad, sesión, token, TOTP, dependencias) · `app/documentos/` (almacenamiento S3,
-detección de tipo, rutas, autenticación) · `scripts/limpiar_prueba.py`.
+migraciones aplicadas · `app/interoperabilidad/` (cliente del centralizador, cliente de
+otros operadores, bandeja de salida, recepción de transferencias) ·
+`app/mock/registraduria.py` · `app/identidad/` (registro, correo, seguridad, sesión,
+token, TOTP, dependencias) · `app/documentos/` (almacenamiento S3, detección de tipo,
+rutas, autenticación) · `scripts/limpiar_prueba.py` · `scripts/probar_transferencia.py`.
 
 **Los cuatro flujos obligatorios de la entrega están implementados y probados de punta
 a punta contra el sistema real del MinTIC.**
@@ -43,14 +44,64 @@ a punta contra el sistema real del MinTIC.**
 - **CU-11, autenticación ante GovCarpeta**: A1, A2 y E1 a E5. El centralizador descarga
   el documento del bucket por el enlace firmado y responde 200.
 
+**CU-16, recepción de transferencias, lado receptor implementado y probado de punta a
+punta** (`POST /api/transferCitizen`, `POST /api/transferCitizenConfirm`): descarga de
+documentos, validación de límites, `citizenEmail` adoptado como `email_carpeta` (AD-10),
+`validateCitizen`/`registerCitizen` y `confirmAPI` por bandeja de salida. La verificación
+de origen en `transferCitizenConfirm` es heurística (IP contra el host de
+`transfer_api_url` en `operador_cache`): el ecosistema no tiene autenticación real.
+La descarga de documentos de otro operador (`app/interoperabilidad/operadores.py`) es en
+streaming y aplica el límite de tamaño sobre los bytes que realmente llegan, nunca sobre
+el `Content-Length` que declara el remoto (puede mentir o no venir). **El lado emisor
+(enviar un ciudadano a otro operador) no está implementado**: no hay código que llame
+`unregisterCitizen` + `POST /api/transferCitizen` de un destino, así que hoy nunca se
+crea una fila `transferencia` en estado `ENVIADA` de forma orgánica.
+
+**Bandeja de salida: recuperación de filas colgadas.** Una fila que quedó en
+`EN_PROCESO` (el proceso que la tomó murió, se colgó, o hubo un redespliegue a mitad de
+ejecución) se revive sola pasados `OUTBOX_EN_PROCESO_MAXIMO_SEGUNDOS` (900 s por
+defecto): vuelve a `PENDIENTE` contando como un intento más, con auditoría propia
+(`outbox.colgada_recuperada`) independiente de si además llegó a un estado terminal. Ver
+`app.interoperabilidad.outbox._recuperar_colgadas`. Probado de punta a punta (incluida
+la reutilización del efecto de descarte de CU-16 al agotar reintentos) el 2026-09-21,
+tanto en aislamiento como dentro de un contenedor Linux real (ver más abajo).
+
+**Sobre el cuelgue de Windows investigado en la sesión anterior: sigue sin confirmarse,
+es una hipótesis, no una conclusión.** La sospecha (una limitación de `ProactorEventLoop`
+al cancelar I/O de socket superpuesta) nunca se descartó de una causa distinta, y buena
+parte de esas pruebas tuvo dos procesos de uvicorn compitiendo por las mismas filas de
+outbox. Al probar el camino de descarga (CU-16) dentro de un contenedor Linux real en
+esta misma máquina (`docker-compose.test.yml`, ver "Estructura"), la descarga del
+documento y las llamadas a GovCarpeta y al centralizador respondieron en menos de un
+segundo cada una, sin ningún colgón — pero eso tampoco descarta el problema en Windows,
+solo dice que en Linux, en esa corrida puntual, no se reprodujo. Esa misma prueba en
+Docker sí encontró un bug real y distinto: una fila `receiveTransferCitizen` quedó
+`EN_PROCESO` con `tomado_en` en NULL (nunca debería pasar; `_reclamar_uno` pone ambos
+campos en el mismo commit) y por eso invisible para `_recuperar_colgadas`, que comparaba
+`tomado_en < limite_tiempo` — NULL en SQL nunca es menor que nada. Ya está corregido:
+la consulta ahora trata NULL como "colgada" también. La causa raíz de cómo esa fila
+llegó a ese estado sigue sin determinarse: en la misma corrida volvió a pasarle a la
+MISMA fila una segunda vez, tras ser revivida y reclamada de nuevo con normalidad
+(la segunda vez sí terminó bien, en un estado terminal estable). No se aisló si es un
+problema real de `_reclamar_uno`/asyncpg bajo concurrencia real (candidato: el mismo
+tipo de comportamiento de "insertmanyvalues" de asyncpg que ya causó un problema
+distinto con inserciones de `auditoria` en esta sesión, aplicado esta vez a un UPDATE)
+o un artefacto de las pruebas manuales hechas en paralelo sobre la misma base. La
+mitigación (tratar NULL como colgada) hace que el sistema se recupere solo de todas
+formas, pero si vuelve a aparecer vale la pena investigarlo con más cuidado antes de
+asumir que está resuelto.
+
 ### Pendiente
 
-**CU-09, validación de firma digital** (A1 de CU-05): sin implementar.
-`documento.firma_valida` queda siempre en nulo para lo que sube el ciudadano.
-Requiere `pyHanko` para validar firmas PAdES dentro del PDF.
+**CU-09, validación de firma digital** (A1 de CU-05 y CU-16): sin implementar.
+`documento.firma_valida` queda siempre en nulo. Requiere `pyHanko` para validar firmas
+PAdES dentro del PDF.
 
-Fuera de alcance por ahora: transferencia entre operadores (diseñada, sin implementar),
+**Envío de transferencias** (lado emisor de CU-16, ver arriba), la purga física periódica
+de transferencias `CONFIRMADA` (hoy solo se agenda `purgar_despues_de`, nada la ejecuta),
 notificaciones más allá del correo de registro, consola de administración.
+
+No registrar `registerTransferEndPoint` todavía: ver "Prohibido".
 
 ## Identidad del operador
 
@@ -74,11 +125,18 @@ app/
   models.py                    las 7 tablas
   interoperabilidad/
     govcarpeta.py              ÚNICO cliente del centralizador
+    operadores.py              cliente de otros operadores (CU-16: descarga, confirmAPI)
     outbox.py                  proceso de bandeja de salida
+    transferencias.py          POST /api/transferCitizen y /transferCitizenConfirm
   mock/registraduria.py        Registraduría simulada
 alembic/versions/              migraciones
 docs/especificacion.md         la especificación completa
 scripts/probar_govcarpeta.py   prueba de humo contra la API real
+scripts/limpiar_prueba.py      borra toda huella local y en el centralizador de una cedula
+scripts/probar_transferencia.py  simula un operador de origen enviando CU-16
+Dockerfile                     imagen de la app; la usa Railway Y docker-compose.test.yml
+docker-compose.test.yml        solo para probar en Linux en esta maquina (Docker Desktop),
+                                nunca para desplegar -- ver "Probar en Linux" mas abajo
 ```
 
 ## Arquitectura en una frase
@@ -122,6 +180,11 @@ Estas no están en la documentación del MinTIC y rompen el sistema en silencio:
 - **Toda operación relevante deja registro en `auditoria`**, que es de solo inserción
   (hay listeners de SQLAlchemy que bloquean UPDATE y DELETE sobre esa tabla).
 - **Ningún secreto en el repositorio.** Solo `.env.example` con los nombres.
+- **`email_carpeta` es el identificador permanente del ciudadano, no un buzón** (AD-10).
+  Se genera una sola vez, en el registro. Al transferir se envía en `citizenEmail` y el
+  correo personal viaja en la extensión `contactEmail`. Al recibir un ciudadano se adopta
+  el `citizenEmail` que llega, sea cual sea su dominio, y **no** se genera una dirección
+  propia. La resolución de colisiones del patrón solo aplica a direcciones propias.
 
 ## Prohibido
 
@@ -138,6 +201,13 @@ Estas no están en la documentación del MinTIC y rompen el sistema en silencio:
   normalmente tiene el servidor de desarrollo del usuario corriendo con `--reload`.
   Si necesitas un servidor para probar, levanta uno en un puerto propio y apágalo
   al terminar.
+- **Cualquier servidor vivo (incluido el tuyo, en tu propio puerto) tiene su propia
+  bandeja de salida corriendo cada `OUTBOX_INTERVALO_SEGUNDOS`.** Si una prueba escribe
+  una fila de `outbox` con `registerCitizen` o `unregisterCitizen` (aunque sea indirecta,
+  p. ej. al probar la recuperación de CU-16 con `req_status = 0`), ese servidor la va a
+  procesar de verdad en segundos — borrarla "a tiempo" es una carrera que se pierde
+  fácilmente. Para probar esos caminos, inyecta un `GovCarpeta` falso directamente en
+  `procesar_lote(...)` en vez de dejar que un servidor vivo la tome.
 
 ## Decisiones cerradas — no reabrir
 
@@ -175,7 +245,32 @@ La Registraduría simulada responde según el **último dígito de la cédula**:
 | cualquier otro | 200, identidad confirmada    | camino básico |
 
 Para el centralizador: la cédula `1234567890` ya está afiliada a otro operador, así que
-`validateCitizen` devuelve 200 y sirve para probar E1 de CU-01.
+`validateCitizen` devuelve 200 y sirve para probar E1 de CU-01. Es también la cédula por
+defecto de `scripts/probar_transferencia.py`: al estar afiliada a otro operador, CU-16
+falla en `validateCitizen` antes de llegar a `registerCitizen`, así que ejercita casi
+toda la recepción (descarga, límites, normalización, `confirmAPI` con `req_status = 0`)
+sin registrar nada de verdad.
+
+## Probar en Linux (Docker Desktop)
+
+Para verificar en Linux el camino de descarga de CU-16 sin exponer nada y sin depender
+de Railway (que no puede alcanzar el servidor de confirmación local que levanta
+`scripts/probar_transferencia.py`): `docker-compose.test.yml` levanta la app real (con
+el `.env` local montado) y el script en dos contenedores separados, en una red Docker
+aislada -- nada se publica salvo el puerto 8000 de la app, igual que en producción.
+
+```bash
+docker compose -f docker-compose.test.yml up --build -d app   # la app, en Linux real
+docker compose -f docker-compose.test.yml logs -f app          # ver el worker de outbox
+docker compose -f docker-compose.test.yml up prueba-transferencia   # corre el script (con "up", no "run": ver el comentario en el archivo)
+docker compose -f docker-compose.test.yml down                 # apaga y limpia la red
+```
+
+Usa la misma base de datos y bucket reales de Supabase que `uvicorn --reload` en
+Windows -- no es una base de pruebas aparte. Se probó el 2026-09-21 con la cédula segura
+1234567890: la descarga del documento, `validateCitizen` y `confirmAPI` respondieron
+todos en menos de un segundo dentro del contenedor. Ver la nota sobre el cuelgue de
+Windows más arriba para lo que esto sí y no demuestra.
 
 ## Convenciones
 

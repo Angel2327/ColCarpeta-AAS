@@ -15,7 +15,11 @@ def hash_password(password: str) -> str:
     return _hasher.hash(password)
 
 
-def verificar_password(password_hash: str, password: str) -> bool:
+def verificar_password(password_hash: str | None, password: str) -> bool:
+    # NULL = ciudadano recibido por transferencia (CU-16) que aun no define contrasena
+    # local: nunca coincide, en vez de reventar contra el binding de argon2.
+    if password_hash is None:
+        return False
     try:
         return _hasher.verify(password_hash, password)
     except (VerifyMismatchError, VerificationError, InvalidHashError):

@@ -18,6 +18,7 @@ from app.identidad.perfil_totp import router as perfil_totp_router
 from app.identidad.registro import router as registro_router
 from app.identidad.sesion import router as sesion_router
 from app.interoperabilidad.outbox import ejecutar_bandeja_de_salida
+from app.interoperabilidad.transferencias import router as transferencias_router
 from app.mock.registraduria import router as registraduria_router
 
 
@@ -66,3 +67,4 @@ app.include_router(registro_router)
 app.include_router(sesion_router)
 app.include_router(perfil_totp_router)
 app.include_router(documentos_router)
+app.include_router(transferencias_router)

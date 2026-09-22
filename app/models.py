@@ -63,7 +63,10 @@ class Ciudadano(Base):
     email_carpeta: Mapped[str | None] = mapped_column(String(255), unique=True, index=True)
     email_personal: Mapped[str] = mapped_column(String(255))
     telefono: Mapped[str] = mapped_column(String(30))
-    password_hash: Mapped[str] = mapped_column(String(255))
+    # Nulo para un ciudadano recibido por transferencia (CU-16): llega sin contrasena
+    # local, la define en su primer inicio de sesion. verificar_password() trata NULL
+    # como "no puede autenticar con contrasena", nunca como coincidencia.
+    password_hash: Mapped[str | None] = mapped_column(String(255))
     # totp_secret + totp_estado siguen el enrolamiento (docs/especificacion.md, "Segundo
     # factor"): NULL/sin totp_estado = nunca enrolado. totp_secret_actualizado_en fija el
     # vencimiento de 15 min de un secreto PENDIENTE. totp_ultimo_paso evita reusar un
@@ -79,7 +82,13 @@ class Ciudadano(Base):
     identidad_verificada: Mapped[bool] = mapped_column(Boolean, default=False)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    documentos: Mapped[list["Documento"]] = relationship(back_populates="ciudadano")
+    # passive_deletes=True: mismo motivo que en `auditorias` mas abajo. documento.ciudadano_id
+    # no admite NULL, asi que sin esto, al borrar un ciudadano con documentos ya borrados
+    # explicitamente en la misma transaccion (p. ej. el descarte de CU-16 en
+    # app.interoperabilidad.outbox), SQLAlchemy igual recarga esta coleccion para nulificarla
+    # antes de borrar el ciudadano y choca contra esa restriccion. Con passive_deletes=True
+    # no la toca: confia en que quien borra el ciudadano ya elimino sus documentos.
+    documentos: Mapped[list["Documento"]] = relationship(back_populates="ciudadano", passive_deletes=True)
     transferencias: Mapped[list["Transferencia"]] = relationship(back_populates="ciudadano")
     # passive_deletes=True: sin esto, al borrar un ciudadano SQLAlchemy nulifica
     # ciudadano_id en cada Auditoria con un UPDATE de ORM antes del DELETE, y el listener
@@ -133,6 +142,11 @@ class Outbox(Base):
     proximo_intento: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ultimo_error: Mapped[str | None] = mapped_column(Text)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Cuando se marco EN_PROCESO por ultima vez; NULL en cualquier otro estado. Permite
+    # detectar filas colgadas (el proceso que las tomo murio, se colgo, o hubo un
+    # redespliegue a mitad de ejecucion) y revivirlas -- ver
+    # app.interoperabilidad.outbox._recuperar_colgadas.
+    tomado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class OperadorCache(Base):

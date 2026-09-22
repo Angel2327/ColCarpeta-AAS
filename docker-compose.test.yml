@@ -1,0 +1,43 @@
+# Solo para verificar en Linux el camino de descarga de documentos de otro operador
+# (app/interoperabilidad/operadores.py), sospechoso de colgarse en Windows -- ver el
+# docstring de ese modulo. NO es para desplegar: Railway usa el Dockerfile solo, sin
+# este archivo.
+#
+# Corre dos contenedores en una red Docker aislada (nada se publica al host salvo el
+# puerto de la propia app, igual que en produccion):
+#   - app: la aplicacion real, con el .env local montado para usar la base de datos y
+#     el bucket reales de Supabase (los mismos que uvicorn --reload usa en Windows).
+#   - prueba-transferencia: scripts/probar_transferencia.py corriendo como "operador de
+#     origen", en su propio contenedor Linux, para que su servidor de confirmacion
+#     tambien quede dentro de la red aislada (nunca expuesto al host ni a la LAN).
+#
+# Uso: ver las instrucciones que dio Claude al terminar esta tarea, o simplemente:
+#   docker compose -f docker-compose.test.yml up --build app -d
+#   docker compose -f docker-compose.test.yml run --rm prueba-transferencia
+#   docker compose -f docker-compose.test.yml down
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./.env:/app/.env:ro
+    environment:
+      - PORT=8000
+
+  prueba-transferencia:
+    build: .
+    # Se corre con "docker compose up", no "run": un contenedor de "run" no registra el
+    # nombre del servicio como alias DNS en la red (solo su propio nombre generado al
+    # azar), asi que "app" no podria resolver "prueba-transferencia" para el POST de
+    # confirmAPI. Con "up" si queda expuesto por el nombre del servicio.
+    depends_on:
+      - app
+    volumes:
+      - ./.env:/app/.env:ro
+    entrypoint: ["python", "scripts/probar_transferencia.py"]
+    command:
+      - --base-url=http://app:8000
+      - --confirmacion-bind=0.0.0.0
+      - --confirmacion-host=prueba-transferencia
