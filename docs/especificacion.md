@@ -378,13 +378,26 @@ Se valida la integridad criptográfica de la firma digital embebida en un PDF (P
 
 Por AD-05, la validación corre en el proceso de segundo plano (bandeja de salida) y no en la petición del ciudadano ni de la entidad emisora: consume procesador, y RNF7 fija un objetivo de tiempo de respuesta para las operaciones interactivas.
 
-Se ejercita en CU-05 (carga propia del ciudadano) y en CU-13 (depósito por una entidad emisora) — ver "Relaciones" en el inventario de casos de uso. **No se ejercita todavía en CU-16** (recepción de un ciudadano transferido desde otro operador): los documentos que llegan por esa vía quedan con `firma_valida` sin valor, aunque traigan una firma real. Es una extensión pendiente, no una limitación de diseño: el mismo `app.documentos.firma` serviría, solo falta encolar la validación desde `_recibir_transferencia`.
+Se ejercita en CU-05 (carga propia del ciudadano), CU-13 (depósito por una entidad emisora) y CU-16 (recepción de un ciudadano transferido desde otro operador) — ver "Relaciones" en el inventario de casos de uso, y "Documentos recibidos por transferencia" más abajo para lo que es distinto en CU-16.
+
+### Documentos recibidos por transferencia (CU-16) y su firma
+
+Un documento que llega por transferencia trae, en `documentsMetadata`, un campo `certificado` que declara el **operador de origen** — no el ciudadano ni una entidad autenticada con nosotros. Es una afirmación de un tercero sin ningún control de autenticación (la API del centralizador y el acuerdo de interoperabilidad no definen ninguno — ver "Trampas del contrato del centralizador"), cualitativamente distinta de la de CU-13, donde quien afirma `certificado = true` es una entidad que sí se autenticó directamente con nosotros.
+
+**Qué significa "cuarentena" en la práctica.** La especificación original de este documento decía que "los documentos recibidos entran en cuarentena hasta validar su firma", dando a entender que quedarían inaccesibles mientras tanto. Eso no es lo que este operador hace, y forzar el código para simularlo —ocultando o bloqueando la descarga de la carpeta completa de un ciudadano recién llegado mientras se valida un PDF a la vez, potencialmente cientos— sería peor para RNF7 y para el propio ciudadano sin ganar nada real: la firma, si la hay, ya estaba fijada desde antes de que la recibiéramos, y no validarla todavía no hace que el documento sea más ni menos confiable de lo que ya era. Por eso la decisión es:
+
+- El documento queda visible en el listado (CU-07) y se puede consultar y descargar (CU-06) desde el momento en que se crea, exactamente igual que uno cargado por el ciudadano (CU-05) o depositado por una entidad (CU-13). No hay un estado "pendiente de revisión" que lo oculte.
+- La validación de la firma corre en segundo plano, una fila de `outbox` por documento (nunca todas de un tirón: con hasta 200 documentos por transferencia, validarlas en la misma llamada que recibe al ciudadano competiría por CPU con el resto de la bandeja de salida y con cualquier otra operación en curso).
+- **Si la firma resulta inválida y el documento llegó marcado `certificado = true` por el operador de origen, se le retira esa condición** (`certificado` pasa a `false`, con una auditoría propia, `documento.certificacion_revocada_por_firma_invalida`, que dice por qué). Es la única consecuencia real de "cuarentena" en este sistema: no una restricción de acceso, sino que dejamos de heredar automáticamente la palabra del operador de origen cuando la prueba criptográfica que él mismo incluyó la contradice. A partir de ahí, el documento consume cuota y admite borrado a solicitud del ciudadano como cualquier documento no certificado (CU-08). El ciudadano no tiene forma de saber que esto pasó si no se le dice: se le notifica por el centro de notificaciones (CU-17), en lenguaje llano, explicando que la firma del documento no pudo verificarse y qué cambia para él (ahora ocupa cuota y se puede eliminar).
+- Si el documento no trae ninguna firma (`firma_valida` queda sin valor, no en `false`), el `certificado` declarado **no se toca**: no tener una firma embebida no es sospechoso por sí solo — CU-13 ya acepta exactamente esa misma combinación (entidad autenticada, sin firma) como normal, y tratarla distinto solo por venir de una transferencia sería inconsistente.
+- Esta revocación no aplica a CU-13: ahí `certificado` lo otorga la entidad emisora autenticada directamente con nosotros, no una firma embebida ni la palabra de un tercero, así que una firma ausente o inválida en un depósito de entidad no le quita la certificación.
+- **La revocación puede dejar al ciudadano por encima de su cuota, sin que nada se lo impida en el momento.** La cuota (`CUOTA_CIUDADANO_BYTES`) solo se valida al cargar o sustituir un documento propio (CU-05/CU-10) — nunca de forma continua ni retroactiva — así que un documento que pasa a contar contra la cuota no dispara ninguna comprobación por sí solo, ni se elimina ni se bloquea nada existente. El efecto aparece la próxima vez que el ciudadano intente cargar o sustituir algo: esa operación se rechaza con `CUOTA_AGOTADA` igual que le pasaría a cualquiera que ya estuviera al límite. Es una decisión explícita, no un descuido, y no es un caso nuevo: un documento recibido por transferencia nunca respetó la cuota individual del ciudadano al recibirse (esa cuota solo rige la carga propia, CU-05/CU-10), así que la revocación se suma a una situación que ya podía darse desde antes de esta entrega.
 
 ### Procedencia de los metadatos de un documento
 
-`entidad_emisora`, `fecha_emision` y `tipo` los declara quien carga el documento (el ciudadano en CU-05, o la entidad emisora en CU-13) sin que el sistema los verifique por sí solo. Lo que sí puede respaldar esa información, de forma independiente entre sí, son dos hechos verificables que la API expone:
+`entidad_emisora`, `fecha_emision` y `tipo` los declara quien carga o entrega el documento (el ciudadano en CU-05, la entidad emisora en CU-13, o el operador de origen en CU-16) sin que el sistema los verifique por sí solo. Lo que sí puede respaldar esa información, de forma independiente entre sí, son dos hechos verificables que la API expone:
 
-- `documento.certificado = true`: la entidad emisora que depositó el documento (CU-13) está autenticada, y `entidad_emisora` viene de su credencial, no de un valor declarado en la petición.
+- `documento.certificado = true`: en CU-13, la entidad emisora que depositó el documento está autenticada con nosotros, y `entidad_emisora` viene de su credencial, no de un valor declarado en la petición. En CU-16 es más débil — lo declara el operador de origen, un tercero sin autenticar — y se retira si la propia firma del documento la contradice (ver "Documentos recibidos por transferencia").
 - `documento.firma_valida = true`: el contenido no cambió desde que se firmó, y `firma_firmante`/`firma_fecha` son lo que la propia firma declara.
 
 Un documento puede tener cualquier combinación de las dos, o ninguna. El backend expone estos datos tal cual; decidir cómo presentarle esa distinción al ciudadano es decisión del portal, no de esta API.
@@ -395,7 +408,7 @@ El formato acordado entre operadores no define autenticación. Los controles apl
 
 - Una confirmación se procesa solo si la cédula está en estado `ENVIADA` y el origen corresponde al destino registrado de esa transferencia.
 - Las peticiones entrantes tienen límite de tamaño total, límite de cantidad de documentos y límite de tasa por origen.
-- Los documentos recibidos entran en cuarentena hasta validar su firma. **Pendiente**: CU-09 todavía no está enganchado en este camino (ver "Validación de firma digital" arriba); hoy `firma_valida` queda sin valor para todo lo que llega por transferencia, sin importar si el archivo trae una firma real.
+- Los documentos recibidos validan su firma digital (CU-09) en segundo plano; no quedan inaccesibles mientras tanto — ver "Documentos recibidos por transferencia (CU-16) y su firma" para lo que "cuarentena" significa en la práctica en este operador.
 - Toda petición entrante, aceptada o rechazada, queda en `auditoria`.
 
 ### Borrado
@@ -562,7 +575,7 @@ Cada petición recibe un identificador de correlación que se propaga a las llam
 | Flujo 2, inicio de sesión (CU-02) | Hecho |
 | Flujo 3, carga de documentos (CU-05) | Hecho |
 | Flujo 4, autenticación ante GovCarpeta (CU-11) | Hecho y probado contra el centralizador real |
-| Validación de firma digital (CU-09) | Hecho en CU-05 y CU-13 (ver "Validación de firma digital" arriba); pendiente en CU-16 |
+| Validación de firma digital (CU-09) | Hecho en CU-05, CU-13 y CU-16 (ver "Validación de firma digital" arriba) |
 | Publicación de endpoints de transferencia | Pendiente, condicionada a que las rutas respondan |
 | Transferencia entre operadores | Diseñada, sin implementar |
 | Notificaciones | Alcance reducido al correo de registro |
@@ -1126,7 +1139,7 @@ Todos estos valores viven en variables de entorno. Los de la tabla son los valor
 
 | Parámetro | Valor | Nota |
 | --- | --- | --- |
-| Cuota por ciudadano, documentos temporales | 200 MB | Los certificados no consumen cuota |
+| Cuota por ciudadano, documentos temporales | 200 MB | Los certificados no consumen cuota; se valida solo al cargar o sustituir (CU-05/CU-10), nunca de forma continua — ver "Documentos recibidos por transferencia (CU-16) y su firma" para el caso de un documento que deja de estar certificado |
 | Tamaño máximo por archivo | 20 MB |  |
 | Tipos permitidos | `application/pdf`, `image/jpeg`, `image/png` | Validados por contenido, no solo por extensión |
 | Documentos por transferencia entrante | 200 como máximo |  |

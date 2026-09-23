@@ -36,7 +36,7 @@ centro de notificaciones, CU-17) · `scripts/limpiar_prueba.py` ·
 `scripts/probar_transferencia.py` · `scripts/probar_envio_transferencia.py` ·
 `scripts/mock_centralizador.py` · `scripts/probar_carpeta_completa.py` ·
 `scripts/alta_entidad_emisora.py` · `scripts/probar_colision_email.py` ·
-`scripts/probar_firma_digital.py`.
+`scripts/probar_firma_digital.py` · `scripts/probar_firma_transferencia.py`.
 
 **Los cuatro flujos obligatorios de la entrega están implementados y probados de punta
 a punta contra el sistema real del MinTIC.**
@@ -367,7 +367,8 @@ aislamiento (retrocede `purgar_despues_de` en la base, sin esperar `PURGE_DELAY_
 de verdad), igual patrón que `scripts/probar_reconciliacion.py`.
 
 **CU-09, validación de firma digital, implementada y probada de punta a punta el
-2026-09-22 — era el último pendiente declarado del entregable.** Nuevo módulo
+2026-09-22 en CU-05 y CU-13** (CU-16 se enganchó aparte el mismo día, ver más abajo --
+juntas cierran el último pendiente declarado del entregable). Nuevo módulo
 `app/documentos/firma.py`, con `pyHanko`: valida que el contenido de un PDF no cambió
 después de firmarse (`intact`), que la firma en sí es criptográficamente correcta
 contra la llave pública del certificado firmante (`valid`), y que esa firma cubre el
@@ -411,10 +412,63 @@ independientes que la API expone tal cual -- sin inventar una etiqueta de "proce
 propia, esa decisión de presentación es del portal, no del backend
 (docs/especificacion.md, "Procedencia de los metadatos de un documento").
 
-**No se enganchó en CU-16** (recepción de una transferencia): los documentos que llegan
-por esa vía siguen con `firma_valida` sin valor sin importar si traen una firma real --
-no estaba en el alcance pedido para esta tarea (solo CU-05 y CU-13), y queda declarado
-como pendiente abajo y en la especificación.
+**CU-09 enganchado también en CU-16, el 2026-09-22.** Paso 3 de
+`_recibir_transferencia` ("Orden de recepción")
+encola `validarFirma` por cada documento PDF recibido, una fila de outbox por
+documento (nunca todas de un tirón: con hasta 200 documentos por transferencia, abrir y
+revisar cada PDF completo en la misma llamada que recibe al ciudadano competiría por
+CPU con el resto de la bandeja de salida). Esto reemplaza la afirmación original de la
+especificación ("los documentos recibidos entran en cuarentena hasta validar su firma")
+por lo que el sistema decide hacer de verdad:
+
+- El documento queda visible, listado y descargable desde el momento en que se crea --
+  igual que en CU-05/CU-13. No hay un estado que lo oculte mientras se valida.
+- Si la firma resulta inválida y el documento llegó marcado `certificado = true` por el
+  **operador de origen** (una afirmación de un tercero sin autenticar -- CLAUDE.md,
+  "trampa 6" -- cualitativamente más débil que la de CU-13, donde certifica una entidad
+  autenticada directamente con nosotros), se le retira esa condición:
+  `documento.certificado` pasa a `false`, con una auditoría propia
+  (`documento.certificacion_revocada_por_firma_invalida`). Es la única consecuencia
+  real de "cuarentena" en este sistema.
+- Si el documento no trae ninguna firma (`firma_valida` sigue en NULL, no en `false`),
+  el `certificado` declarado no se toca: no tener firma embebida no es sospechoso por
+  sí solo -- CU-13 ya acepta esa misma combinación como normal.
+- Esto nunca aplica a CU-13: ahí `certificado` lo otorga la entidad autenticada
+  directamente, no una firma embebida ni la palabra de un tercero.
+
+Documentado en docs/especificacion.md, nueva sección "Documentos recibidos por
+transferencia (CU-16) y su firma" (reemplaza la mención suelta de "cuarentena" que
+nunca se había cumplido).
+
+**Dos detalles de esa revocación, cerrados el 2026-09-22 (el ciudadano no se enteraba, y
+la cuota podía dispararse sin aviso):**
+
+1. **Notificación por el centro de CU-17.** La revocación queda en `auditoria`, pero el
+   ciudadano no puede consultar esa tabla -- sin avisarle por otro canal, nunca se
+   entera de que un documento que veía certificado dejó de estarlo. `_aplicar_resultado_firma`
+   ahora llama a `enviar_correo` (mismo mecanismo de siempre, sin canal paralelo) con un
+   mensaje en lenguaje llano: qué documento, por qué (la firma no se pudo verificar,
+   sin tecnicismos de pyHanko/PAdES) y qué cambia para él (ocupa cuota, se puede
+   eliminar).
+2. **Efecto en la cuota, decidido explícitamente en vez de descubierto por accidente.**
+   Revisar el código confirmó lo esperado: la cuota (`CUOTA_CIUDADANO_BYTES`) solo se
+   valida al cargar o sustituir un documento propio (`cargar_documento`, CU-05/CU-10) --
+   nunca de forma continua. Un documento que deja de estar certificado no dispara nada
+   por sí solo: no se borra nada, no se bloquea el acceso a lo que ya existe. El único
+   efecto aparece la próxima vez que el ciudadano intente cargar o sustituir algo, que
+   se rechaza con `CUOTA_AGOTADA` igual que a cualquiera ya al límite. No es un caso
+   nuevo: un documento recibido por transferencia nunca respetó la cuota individual del
+   ciudadano al recibirse (esa cuota siempre fue exclusiva de la carga propia), así que
+   esto se suma a una situación que ya podía darse desde antes de esta sesión, no la
+   inaugura. Documentado en docs/especificacion.md, "Documentos recibidos por
+   transferencia (CU-16) y su firma" y "Parámetros y límites".
+
+Probado de punta a punta extendiendo `scripts/probar_firma_transferencia.py`: además de
+la revocación misma, verifica que aparece una notificación para el documento alterado
+(y ninguna para el firmado), y que el ciudadano queda con `usado_bytes > cuota_bytes`
+tras la revocación sin que nada se rompa -- confirmado intentando cargar un documento
+nuevo justo después y viendo que se rechaza con 409 `CUOTA_AGOTADA`, exactamente como
+se documentó.
 
 Se verificó explícitamente que la imagen de Docker (`python:3.12-slim`, Linux, x86_64)
 resuelve las dependencias de criptografía de pyHanko (`cryptography`, `lxml`) con
@@ -432,16 +486,26 @@ para el alterado (sin que deje de existir), y `firma_valida` sin valor para el q
 tiene firma -- distinguido explícitamente comprobando que el trabajo de `outbox` sí
 terminó `COMPLETADO` (no es que la validación no haya corrido, es que no encontró nada
 que aplicar). Repite el caso firmado depositándolo por una entidad emisora (CU-13) y
-confirma `certificado=true` junto con `firma_valida=true`. Los tres regresivos
-(`probar_carpeta_completa.py`, `probar_colision_email.py`) se corrieron de nuevo
-después de este cambio y siguen sin fallos.
+confirma `certificado=true` junto con `firma_valida=true`.
+
+`scripts/probar_firma_transferencia.py`, nuevo, prueba el enganche en CU-16 de punta a
+punta: simula un operador de origen que envía dos documentos marcados `certificado:
+true`, uno firmado de verdad y ese mismo alterado después de firmarse, contra `app-a`
+con `mock-centralizador` (para que la recepción llegue de verdad hasta `ACTIVO`, no
+como `scripts/probar_transferencia.py`, que usa la cédula segura del MinTIC real y por
+eso nunca llega tan lejos). Confirma, contra la base de datos directamente (el
+ciudadano recibido no tiene contraseña todavía): los dos documentos existen desde el
+primer momento, el firmado termina `firma_valida=true` conservando `certificado=true`,
+y el alterado termina `firma_valida=false` con el `certificado` retirado y su propia
+auditoría de revocación -- sin dejar de existir. Se corrieron de nuevo como regresión
+`probar_envio_transferencia.py`, `probar_regreso_antes_de_purga.py` y
+`probar_reconciliacion.py` (los otros caminos que pasan por
+`_recibir_transferencia`/`_reconciliar_transferencias`) y `probar_carpeta_completa.py`
+/ `probar_colision_email.py`; los seis siguen sin fallos. Ninguno de los seis encontró
+un bug nuevo -- confirmaron que el enganche no rompió nada de lo que ya pasaba por esa
+misma función.
 
 ### Pendiente
-
-**CU-09 en CU-16** (recepción de una transferencia): los documentos que llegan por
-transferencia no encolan `validarFirma` todavía, aunque traigan una firma real. El
-mismo `app.documentos.firma` serviría; solo falta engancharlo desde
-`_recibir_transferencia`. Ver docs/especificacion.md, "Endpoints de transferencia".
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio
 de operadores"): hoy CU-03 simplemente rechaza el envío en ese caso (`ValueError`, no
@@ -521,6 +585,7 @@ scripts/probar_carpeta_completa.py  CU-07/08/10/11/13/17 + perfil, y _purgar_doc
 scripts/probar_colision_email.py  _recibir_transferencia en aislamiento: colision de email_carpeta entre dos cedulas
 scripts/alta_entidad_emisora.py  alta, rotacion, revocacion y reactivacion de una entidad emisora (CU-13); no es una ruta publica
 scripts/probar_firma_digital.py  CU-09: genera con pyHanko un PDF firmado/alterado/sin firma y valida los tres
+scripts/probar_firma_transferencia.py  CU-09 en CU-16: documento certificado por el origen que llega firmado y alterado
 scripts/mock_centralizador.py  centralizador falso en memoria, solo para esas pruebas
 Dockerfile                     imagen de la app; la usa Railway Y docker-compose.test.yml
 docker-compose.test.yml        solo para probar en Linux en esta maquina (Docker Desktop),
@@ -684,6 +749,7 @@ docker compose -f docker-compose.test.yml run --rm prueba-primer-acceso \
 docker compose -f docker-compose.test.yml run --rm prueba-reenvio-primer-acceso   # token vencido + reenvio
 docker compose -f docker-compose.test.yml run --rm prueba-carpeta-completa   # CU-07/08/10/11/13/17 + perfil
 docker compose -f docker-compose.test.yml run --rm prueba-firma-digital   # CU-09: firmado/alterado/sin firma
+docker compose -f docker-compose.test.yml run --rm prueba-firma-transferencia   # CU-09 en CU-16
 docker compose -f docker-compose.test.yml down -v             # -v: tambien borra postgres-a/b
 ```
 
@@ -777,6 +843,24 @@ deliberada de validación de cadena de confianza. Probado de punta a punta el
 2026-09-22, junto con una reconstrucción sin caché de la imagen de `app-a` para
 confirmar que pyHanko y sus dependencias de criptografía (`cryptography`, `lxml`)
 instalan con paquetes binarios ya compilados en Linux, sin tocar el `Dockerfile`.
+
+`scripts/probar_firma_transferencia.py` prueba el enganche de CU-09 en CU-16. Sirve dos
+PDF (firmado, y ese mismo alterado) desde su propio servidor HTTP local -- mismo patrón
+que `confirmAPI` en `scripts/probar_transferencia.py` -- y envía un
+`POST /api/transferCitizen` a `app-a` con los dos marcados `certificado: true` en
+`documentsMetadata` (la palabra del operador de origen, no autenticada). A diferencia
+de `probar_transferencia.py` (que usa la cédula ya afiliada a otro operador real y por
+eso la recepción se descarta antes de terminar), este corre contra `mock-centralizador`
+para que `validateCitizen` diga "disponible" y la recepción llegue de verdad hasta
+`ACTIVO`. Verifica contra la base de datos (el ciudadano recibido no tiene contraseña
+todavía: no vale la pena pasar por primer acceso solo para esta lectura) que los dos
+documentos existen desde el primer momento, que el firmado conserva
+`certificado=true` con `firma_valida=true`, y que el alterado pierde el `certificado`
+(`firma_valida=false`, con su propia auditoría de revocación) sin dejar de existir.
+Probado de punta a punta el 2026-09-22, junto con `probar_envio_transferencia.py`,
+`probar_regreso_antes_de_purga.py` y `probar_reconciliacion.py` como regresión (los
+otros caminos que ya pasaban por `_recibir_transferencia`): los cuatro siguen sin
+fallos.
 
 ## Convenciones
 

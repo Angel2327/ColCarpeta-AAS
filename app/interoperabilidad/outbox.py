@@ -199,8 +199,14 @@ async def _recibir_transferencia(gov: GovCarpeta, payload: dict) -> None:
     registerCitizen. Cada paso revisa lo que ya quedo hecho en un intento anterior, para
     que un reintento retome en vez de duplicar.
 
-    La validacion de firma digital (paso 4 de "Orden de recepcion") queda pendiente de
-    CU-09 (requiere pyHanko): `firma_valida` se deja en NULL, igual que A1 de CU-05.
+    Paso 4 de "Orden de recepcion" (validar la firma digital, CU-09): paso 3 encola
+    `validarFirma` por cada documento PDF, una fila de outbox distinta por cada uno --
+    la validacion en si (abrir y revisar el PDF completo) corre despues, en su propio
+    turno de la bandeja de salida, nunca aqui: con hasta 200 documentos por
+    transferencia, hacerlo en esta misma llamada la volveria lenta y competiria por
+    CPU con el resto de la recepcion. Ver `_aplicar_resultado_firma` para que pasa con
+    el `certificado` que declaro el operador de origen si esa firma resulta invalida
+    ("cuarentena", docs/especificacion.md).
 
     Paso 2 tambien rechaza (ValueError, no reintentable) si `citizenEmail` ya pertenece
     a OTRA cedula distinta ya afiliada aqui: colision real entre dos ciudadanos
@@ -378,10 +384,11 @@ async def _recibir_transferencia(gov: GovCarpeta, payload: dict) -> None:
         content_type = content_type_remoto.split(";")[0].strip() if content_type_remoto else "application/octet-stream"
         clave = generar_clave(content_type)
         subir_objeto(clave=clave, contenido=contenido, content_type=content_type)
+        documento_id = uuid.uuid4()
         async with SessionLocal() as session:
             session.add(
                 Documento(
-                    id=uuid.uuid4(),
+                    id=documento_id,
                     ciudadano_id=cedula,
                     titulo=doc["titulo"],
                     tipo=doc["tipo"],
@@ -394,6 +401,25 @@ async def _recibir_transferencia(gov: GovCarpeta, payload: dict) -> None:
                     certificado=doc["certificado"],
                 )
             )
+            # CU-09 en CU-16 ("cuarentena"): igual que CU-05/CU-13, solo un PDF puede
+            # traer una firma que valga la pena revisar, y la validacion corre en
+            # segundo plano (AD-05) -- una fila de outbox por documento, nunca todas
+            # de un tiron dentro de esta misma llamada, para no retener esta transaccion
+            # ni competir por CPU con el resto de la recepcion. "origen": "transferencia"
+            # es lo que le dice a `_aplicar_resultado_firma` que, si la firma resulta
+            # invalida, tambien hay que revocarle el `certificado` que declaro el
+            # operador de origen (ver ese efecto para el porque).
+            if content_type == "application/pdf":
+                session.add(
+                    Outbox(
+                        operacion="validarFirma",
+                        payload={
+                            "documento_id": str(documento_id),
+                            "correlation_id": payload.get("correlation_id"),
+                            "origen": "transferencia",
+                        },
+                    )
+                )
             await session.commit()
 
     # Paso 5: validateCitizen + registerCitizen en el centralizador.
@@ -659,6 +685,33 @@ async def _aplicar_resultado_firma(
     documento no traia firma (o dejo de existir mientras tanto), `respuesta` es `None`
     y no hay nada que aplicar -- `firma_valida` se queda como estaba (`NULL`, "sin
     firma"), nunca se fuerza a `False`.
+
+    CU-16 ("cuarentena", ver docs/especificacion.md): si el documento llego por
+    transferencia (`payload["origen"] == "transferencia"`) marcado `certificado=true`
+    por el operador de origen -- una afirmacion de un tercero sin autenticar, CLAUDE.md
+    "trampa 6" -- y la firma resulta invalida, se le retira el `certificado`: alguien
+    afirmo algo que la propia firma contradice, y esa afirmacion no tiene detras un
+    canal autenticado con nosotros (a diferencia de CU-13, donde `certificado` lo
+    otorga la entidad emisora autenticada directamente, y una firma ausente o invalida
+    no lo toca). Si no trae firma en absoluto (`firma_valida` sigue en NULL), el
+    `certificado` declarado no se toca -- CU-13 ya acepta esa misma combinacion como
+    normal, y aqui no hay motivo para tratarla distinto.
+
+    Esa revocacion cambia dos cosas para el ciudadano sin que el haya hecho nada: el
+    documento empieza a contar contra su cuota de almacenamiento (antes no, por
+    certificado) y se vuelve borrable (CU-08 no admite borrar documentos certificados).
+    Por eso se notifica por el centro de CU-17 -- no basta con dejarlo en `auditoria`,
+    que el ciudadano no puede consultar. Sobre el efecto en la cuota: no hay ninguna
+    reconciliacion retroactiva ni aviso aparte de "quedaste sobre el limite" -- la cuota
+    siempre se valida solo al cargar o sustituir un documento (CU-05/CU-10), nunca de
+    forma continua, asi que si esto empuja al ciudadano por encima de su cuota no pasa
+    nada hasta que intente cargar o sustituir algo nuevo, momento en el que esa carga
+    se rechaza igual que a cualquiera que ya estuviera al limite (documentado en
+    docs/especificacion.md, "Parametros y limites"). Es una decision explicita, no un
+    descuido: este mismo documento ya podia haber llegado por CU-16 sin certificar
+    desde un principio y nunca respeto un limite de cuota individual al recibirse (esa
+    cuota solo rige la carga propia del ciudadano), asi que la revocacion no introduce
+    un caso nuevo, se suma a uno que ya existia.
     """
     if resultado != ResultadoOperacion.EXITO or respuesta is None:
         return
@@ -685,6 +738,45 @@ async def _aplicar_resultado_firma(
             },
         )
     )
+
+    if payload.get("origen") == "transferencia" and documento.certificado and respuesta["firma_valida"] is False:
+        documento.certificado = False
+        session.add(
+            Auditoria(
+                actor="sistema",
+                accion="documento.certificacion_revocada_por_firma_invalida",
+                recurso=str(documento.id),
+                ciudadano_id=documento.ciudadano_id,
+                correlation_id=payload.get("correlation_id"),
+                detalle={
+                    "motivo": "el operador de origen marco el documento como certificado, "
+                    "pero la firma que trae no es valida",
+                    "firmante": respuesta["firmante"],
+                },
+            )
+        )
+
+        ciudadano = await session.get(Ciudadano, documento.ciudadano_id)
+        if ciudadano is not None:
+            from app.notificaciones.correo import enviar_correo
+
+            await enviar_correo(
+                session,
+                ciudadano_id=ciudadano.id,
+                destinatario=ciudadano.email_personal,
+                asunto="Un documento de tu carpeta dejó de estar certificado",
+                cuerpo=(
+                    f"Hola {ciudadano.nombre},\n\n"
+                    f'El documento "{documento.titulo}" llegó a tu carpeta marcado como certificado, '
+                    "pero no pudimos comprobar la firma digital que traía: parece que el archivo "
+                    "cambió después de haberse firmado, así que ya no podemos confirmar que sea el "
+                    "original.\n\n"
+                    "Por eso ese documento ya no cuenta como certificado en tu carpeta. Ahora ocupa "
+                    "espacio de tu cuota de almacenamiento, y puedes eliminarlo si quieres.\n\n"
+                    "Si crees que esto es un error, puedes volver a solicitar el documento a quien "
+                    "te lo envió.\n"
+                ),
+            )
 
 
 async def _emitir_token_primer_acceso(session: AsyncSession, ciudadano: Ciudadano, payload: dict) -> None:

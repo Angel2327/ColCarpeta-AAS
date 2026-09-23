@@ -250,3 +250,24 @@ services:
     command:
       - --base-url=http://app-a:8000
       - --database-url=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+
+  # scripts/probar_firma_transferencia.py: CU-09 enganchado en CU-16. Simula un
+  # operador de origen que envia dos documentos "certificado: true" -- uno firmado de
+  # verdad, otro firmado y luego alterado -- por POST /api/transferCitizen a app-a.
+  # Necesita mock-centralizador (para que validateCitizen diga "disponible" y la
+  # recepcion llegue hasta ACTIVO) y sirve los dos PDF desde su propio servidor HTTP
+  # local, igual patron que "prueba-transferencia" con confirmAPI.
+  prueba-firma-transferencia:
+    build: .
+    depends_on:
+      - app-a
+      - mock-centralizador
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+    entrypoint: ["python", "scripts/probar_firma_transferencia.py"]
+    command:
+      - --base-url=http://app-a:8000
+      - --database-url=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+      - --puerto-servidor=9401
+      - --servidor-bind=0.0.0.0
+      - --servidor-host=prueba-firma-transferencia
