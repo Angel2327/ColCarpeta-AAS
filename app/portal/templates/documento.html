@@ -2,7 +2,7 @@
 {% extends "base.html" %}
 {% block titulo %}{{ doc.titulo }}{% endblock %}
 {% block contenido %}
-<p><a href="/portal/carpeta">« Volver a mi carpeta</a></p>
+<p><a href="/carpeta">« Volver a mi carpeta</a></p>
 <h1>{{ doc.titulo }}</h1>
 
 {% if error %}
@@ -52,9 +52,9 @@
   </dl>
 
   <div class="acciones">
-    <a class="boton" href="/portal/documentos/{{ doc.id }}/descarga">Descargar</a>
+    <a class="boton" href="/documentos/{{ doc.id }}/descarga">Descargar</a>
     {% if not doc.certificado and doc.estado.value == "ACTIVO" %}
-    <form method="post" action="/portal/documentos/{{ doc.id }}/eliminar">
+    <form method="post" action="/documentos/{{ doc.id }}/eliminar">
       <button type="submit" class="boton boton--peligro">Eliminar</button>
     </form>
     {% endif %}
@@ -67,7 +67,7 @@
   {% if doc.estado_autenticacion.value == "NO_SOLICITADA" %}
     <p>Todavia no has pedido autenticar este documento ante el sistema nacional GovCarpeta.</p>
     {% if doc.estado.value == "ACTIVO" %}
-    <form method="post" action="/portal/documentos/{{ doc.id }}/autenticacion">
+    <form method="post" action="/documentos/{{ doc.id }}/autenticacion">
       <button type="submit">Solicitar autenticacion</button>
     </form>
     {% endif %}
@@ -78,7 +78,7 @@
   {% elif doc.estado_autenticacion.value == "RECHAZADO" %}
     <p class="aviso aviso--error" role="status">GovCarpeta rechazo la autenticacion de este documento.</p>
     {% if doc.estado.value == "ACTIVO" %}
-    <form method="post" action="/portal/documentos/{{ doc.id }}/autenticacion">
+    <form method="post" action="/documentos/{{ doc.id }}/autenticacion">
       <button type="submit">Intentar de nuevo</button>
     </form>
     {% endif %}

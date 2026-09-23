@@ -1,7 +1,7 @@
 {% import "_macros.html" as m %}
 <li class="documento-fila" id="documento-{{ doc.id }}">
   <div class="documento-fila__cabecera">
-    <a class="documento-fila__titulo" href="/portal/documentos/{{ doc.id }}">{{ doc.titulo }}</a>
+    <a class="documento-fila__titulo" href="/documentos/{{ doc.id }}">{{ doc.titulo }}</a>
     <div>
       {{ m.etiqueta_procedencia(doc) }}
       {{ m.etiqueta_firma(doc) }}
@@ -13,10 +13,10 @@
     {% if doc.fecha_emision %} · emitido el {{ doc.fecha_emision.strftime("%d/%m/%Y") }}{% endif %}
   </div>
   <div class="documento-fila__acciones">
-    <a href="/portal/documentos/{{ doc.id }}/descarga">Descargar</a>
+    <a href="/documentos/{{ doc.id }}/descarga">Descargar</a>
     {% if not doc.certificado %}
-    <form method="post" action="/portal/documentos/{{ doc.id }}/eliminar"
-          hx-post="/portal/documentos/{{ doc.id }}/eliminar"
+    <form method="post" action="/documentos/{{ doc.id }}/eliminar"
+          hx-post="/documentos/{{ doc.id }}/eliminar"
           hx-target="#documento-{{ doc.id }}"
           hx-swap="outerHTML"
           hx-confirm="¿Eliminar «{{ doc.titulo }}» de tu carpeta?">

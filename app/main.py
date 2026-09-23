@@ -46,6 +46,7 @@ from app.interoperabilidad.transferencias import router_propio as traslado_route
 from app.mock.registraduria import router as registraduria_router
 from app.notificaciones.router import router as notificaciones_router
 from app.portal.router import router as portal_router
+from app.portal.router import router_legado as portal_router_legado
 
 
 @asynccontextmanager
@@ -112,7 +113,12 @@ app.include_router(entidades_router)
 app.include_router(notificaciones_router)
 app.include_router(transferencias_router)
 app.include_router(traslado_router)
+# El portal vive en la raiz del dominio (AD-11): / lleva a la carpeta o a iniciar
+# sesion, sin prefijo -- pero no toca ninguna ruta de /api/, /health, /mock/ ni las
+# que expone FastAPI (/docs, /redoc, /openapi.json). portal_router_legado redirige de
+# forma permanente cada ruta vieja bajo /portal/... hacia su equivalente nueva.
 app.include_router(portal_router)
+app.include_router(portal_router_legado)
 # AD-11: el portal sirve sus propios estaticos (HTMX vendorizado, hoja de estilos) desde
 # el mismo proceso -- ninguna dependencia de red en tiempo de ejecucion.
-app.mount("/portal/static", StaticFiles(directory=str(Path(__file__).parent / "portal" / "static")), name="portal-static")
+app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "portal" / "static")), name="portal-static")

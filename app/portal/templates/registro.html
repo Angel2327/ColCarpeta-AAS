@@ -8,7 +8,7 @@
   <p class="aviso aviso--error" role="alert">{{ error }}</p>
   {% endif %}
 
-  <form method="post" action="/portal/registro" novalidate>
+  <form method="post" action="/registro" novalidate>
     <div class="campo">
       <label for="cedula">Cedula</label>
       <input type="text" id="cedula" inputmode="numeric" name="cedula" value="{{ valores.cedula if valores else '' }}" required autofocus>
@@ -39,5 +39,5 @@
   </form>
 </div>
 
-<p>¿Ya tienes una carpeta? <a href="/portal/sesion">Inicia sesion</a>.</p>
+<p>¿Ya tienes una carpeta? <a href="/sesion">Inicia sesion</a>.</p>
 {% endblock %}

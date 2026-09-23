@@ -4,6 +4,12 @@ de la API JSON -- simula un navegador con `httpx.AsyncClient` (formularios por
 `data=`, no `json=`; la cookie de sesion la conserva el propio cliente, igual que un
 navegador real).
 
+El portal vive en la raiz del dominio (/, /sesion, /registro, /carpeta,
+/documentos/{id}, ...). Las rutas viejas bajo /portal/... (donde vivio antes) deben
+seguir funcionando via redireccion permanente (308): se verifica al final, sin
+`follow_redirects`, para poder inspeccionar el codigo y el encabezado `Location` en
+vez de solo llegar al destino.
+
 Corre contra una instancia real y viva (docker-compose.test.yml, servicio "app-a").
 
 Uso (dentro de docker-compose.test.yml, servicio "prueba-portal"):
@@ -67,9 +73,15 @@ async def main() -> None:
             await conn.close()
 
     async with httpx.AsyncClient(base_url=args.base_url, timeout=15.0, follow_redirects=True) as cliente:
+        print("0. GET / sin sesion debe llevar a iniciar sesion (antes respondia 404)...")
+        r = await cliente.get("/")
+        print(f"   -> {r.status_code} (url final: {r.url})")
+        if r.status_code != 200 or "Iniciar sesion" not in r.text:
+            fallos.append(f"raiz sin sesion: se esperaba terminar en iniciar sesion, llego a {r.url}")
+
         print(f"1. Registrando cedula {cedula} por el formulario del portal...")
         r = await cliente.post(
-            "/portal/registro",
+            "/registro",
             data={
                 "cedula": str(cedula),
                 "nombre": f"Prueba Portal {cedula}",
@@ -89,12 +101,12 @@ async def main() -> None:
         print("   -> ACTIVO")
 
         print("3. Probando una contrasena incorrecta primero (mensaje en lenguaje claro)...")
-        r = await cliente.post("/portal/sesion", data={"usuario": str(cedula), "password": "incorrecta-cualquiera"})
+        r = await cliente.post("/sesion", data={"usuario": str(cedula), "password": "incorrecta-cualquiera"})
         if "incorrect" not in r.text.lower():
             fallos.append("login con contrasena incorrecta: no se encontro un mensaje de error en lenguaje claro")
 
         print("4. Iniciando sesion de verdad por el formulario del portal...")
-        r = await cliente.post("/portal/sesion", data={"usuario": str(cedula), "password": password})
+        r = await cliente.post("/sesion", data={"usuario": str(cedula), "password": password})
         print(f"   -> {r.status_code} (url final: {r.url})")
         if r.status_code != 200 or "Mi carpeta" not in r.text:
             fallos.append(f"login: se esperaba terminar en 'Mi carpeta', llego a {r.url}")
@@ -102,14 +114,14 @@ async def main() -> None:
         if "colcarpeta_sesion" not in cliente.cookies:
             fallos.append("login: no se fijo la cookie de sesion del portal")
 
-        print("5. GET /portal/carpeta debe mostrar la carpeta vacia...")
-        r = await cliente.get("/portal/carpeta")
+        print("5. GET /carpeta debe mostrar la carpeta vacia...")
+        r = await cliente.get("/carpeta")
         if r.status_code != 200 or "Todavia no tienes documentos" not in r.text:
             fallos.append("carpeta vacia: no se encontro el mensaje de carpeta vacia")
 
         print("6. Subiendo un documento por el formulario de la carpeta...")
         r = await cliente.post(
-            "/portal/carpeta/documentos",
+            "/carpeta/documentos",
             data={"titulo": "Certificado de prueba del portal", "tipo": "OTRO"},
             files={"archivo": ("prueba.pdf", io.BytesIO(PDF_DE_PRUEBA), "application/pdf")},
         )
@@ -124,7 +136,7 @@ async def main() -> None:
         if "Informacion proporcionada por ti" not in r.text and "Informaci" not in r.text:
             fallos.append("subir documento: se esperaba la nota en letra pequena de procedencia")
 
-        coincidencia = re.search(r"/portal/documentos/([0-9a-fA-F-]{36})", r.text)
+        coincidencia = re.search(r"/documentos/([0-9a-fA-F-]{36})", r.text)
         if not coincidencia:
             print("ABORTADO: no se pudo extraer el id del documento subido de la carpeta HTML.")
             sys.exit(1)
@@ -132,7 +144,7 @@ async def main() -> None:
         print(f"   documento_id={documento_id}")
 
         print("7. GET del detalle del documento: procedencia y firma en lenguaje de persona...")
-        r = await cliente.get(f"/portal/documentos/{documento_id}")
+        r = await cliente.get(f"/documentos/{documento_id}")
         print(f"   -> {r.status_code}")
         if r.status_code != 200:
             fallos.append("detalle del documento: se esperaba 200")
@@ -142,27 +154,47 @@ async def main() -> None:
             fallos.append("detalle del documento: falta la seccion de autenticacion ante GovCarpeta")
 
         print("8. Descargando el documento (debe llegar el mismo contenido que se subio)...")
-        r = await cliente.get(f"/portal/documentos/{documento_id}/descarga")
+        r = await cliente.get(f"/documentos/{documento_id}/descarga")
         print(f"   -> {r.status_code}, {len(r.content)} bytes")
         if r.status_code != 200 or r.content != PDF_DE_PRUEBA:
             fallos.append("descarga: el contenido descargado no coincide con lo que se subio")
 
         print("9. Eliminando el documento desde la carpeta (borrado diferido, CU-08)...")
-        r = await cliente.post(f"/portal/documentos/{documento_id}/eliminar")
+        r = await cliente.post(f"/documentos/{documento_id}/eliminar")
         print(f"   -> {r.status_code} (url final: {r.url})")
         if r.status_code != 200 or "El documento se elimino de tu carpeta" not in r.text:
             fallos.append("eliminar documento: no se mostro el mensaje de exito esperado")
         if documento_id in r.text:
             fallos.append("eliminar documento: el documento eliminado no deberia seguir apareciendo en el listado")
 
-        print("10. Cerrando sesion y confirmando que /portal/carpeta vuelve a pedir login...")
-        r = await cliente.post("/portal/salir")
+        print("10. Rutas viejas bajo /portal/... deben redirigir de forma permanente (308)...")
+        casos_legado = [
+            ("GET", "/portal", "/"),
+            ("GET", "/portal/carpeta", "/carpeta"),
+            ("GET", "/portal/carpeta?subido=1", "/carpeta?subido=1"),
+            ("GET", "/portal/sesion", "/sesion"),
+            ("GET", "/portal/registro", "/registro"),
+            ("GET", f"/portal/documentos/{documento_id}", f"/documentos/{documento_id}"),
+            ("GET", f"/portal/documentos/{documento_id}/descarga", f"/documentos/{documento_id}/descarga"),
+            ("GET", "/portal/static/estilos.css", "/static/estilos.css"),
+        ]
+        for metodo, viejo, nuevo_esperado in casos_legado:
+            r = await cliente.request(metodo, viejo, follow_redirects=False)
+            ubicacion = r.headers.get("location")
+            print(f"   {metodo} {viejo} -> {r.status_code} Location: {ubicacion}")
+            if r.status_code != 308:
+                fallos.append(f"{viejo}: se esperaba 308 (redireccion permanente que preserva metodo), llego {r.status_code}")
+            if ubicacion != nuevo_esperado:
+                fallos.append(f"{viejo}: se esperaba Location={nuevo_esperado}, llego {ubicacion}")
+
+        print("11. Cerrando sesion y confirmando que /carpeta vuelve a pedir login...")
+        r = await cliente.post("/salir")
         if r.status_code != 200 or "Iniciar sesion" not in r.text:
             fallos.append("cerrar sesion: no se termino en la pantalla de inicio de sesion")
 
-        r = await cliente.get("/portal/carpeta")
+        r = await cliente.get("/carpeta")
         if "Iniciar sesion" not in r.text:
-            fallos.append("tras cerrar sesion, /portal/carpeta deberia redirigir a iniciar sesion")
+            fallos.append("tras cerrar sesion, /carpeta deberia redirigir a iniciar sesion")
 
     print()
     if fallos:
@@ -170,7 +202,10 @@ async def main() -> None:
         for f in fallos:
             print(f" - {f}")
         sys.exit(1)
-    print("Prueba del portal (registro, login, subir, listar, ver detalle, descargar, eliminar, salir) sin fallos.")
+    print(
+        "Prueba del portal (raiz, registro, login, subir, listar, ver detalle, descargar, "
+        "eliminar, redirecciones /portal/... y salir) sin fallos."
+    )
 
 
 if __name__ == "__main__":

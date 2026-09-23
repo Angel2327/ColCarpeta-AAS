@@ -1,13 +1,20 @@
 """Portal del ciudadano: pantallas HTML servidas por la misma aplicación FastAPI
-(AD-11, docs/especificacion.md). Cada ruta aquí es una vista sobre la misma capa de
-servicios que usan las rutas JSON (`app.identidad.servicios`, `app.documentos.servicios`)
--- nunca llama a esas rutas por HTTP, ni duplica su lógica.
+(AD-11, docs/especificacion.md), en la raíz del dominio. Cada ruta aquí es una vista
+sobre la misma capa de servicios que usan las rutas JSON (`app.identidad.servicios`,
+`app.documentos.servicios`) -- nunca llama a esas rutas por HTTP, ni duplica su lógica.
+La API propia sigue completa bajo `/api/`; ninguna ruta de este archivo choca con ella,
+con `/health`, con `/mock/` ni con `/docs`, `/redoc` u `/openapi.json` (los expone
+FastAPI mismo).
 
 La sesión viaja en una cookie (`app.portal.auth`), no en un token que JavaScript pueda
 leer. Toda ruta que exige sesión repite el mismo par de líneas al principio (leer la
-cookie, redirigir a `/portal/sesion` si no hay ciudadano) en vez de una dependencia que
-oculte el redirect -- es deliberado, para que cada vista deje claro a simple vista qué
-pasa si no hay sesión.
+cookie, redirigir a `/sesion` si no hay ciudadano) en vez de una dependencia que oculte
+el redirect -- es deliberado, para que cada vista deje claro a simple vista qué pasa si
+no hay sesión.
+
+`router_legado` (al final de este archivo) redirige de forma permanente cada ruta vieja
+bajo `/portal/...` (donde vivía el portal antes de moverse a la raíz) hacia su
+equivalente nueva, por si alguien guardó un enlace.
 """
 
 from __future__ import annotations
@@ -27,7 +34,7 @@ from app.errors import ErrorDeNegocio
 from app.identidad.servicios import RespuestaSesion, SolicitudRegistro, SolicitudSesion, cerrar_sesion, iniciar_sesion, registrar_ciudadano
 from app.portal.auth import borrar_cookie_sesion, ciudadano_actual_portal, fijar_cookie_sesion
 
-router = APIRouter(prefix="/portal", tags=["portal"], include_in_schema=False)
+router = APIRouter(tags=["portal"], include_in_schema=False)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
@@ -64,10 +71,10 @@ def _parse_fecha(valor: str | None) -> date | None:
 # --- raiz --------------------------------------------------------------------------
 
 
-@router.get("")
+@router.get("/")
 async def raiz(request: Request) -> RedirectResponse:
     ciudadano = await ciudadano_actual_portal(request)
-    destino = "/portal/carpeta" if ciudadano is not None else "/portal/sesion"
+    destino = "/carpeta" if ciudadano is not None else "/sesion"
     return RedirectResponse(destino, status_code=303)
 
 
@@ -77,7 +84,7 @@ async def raiz(request: Request) -> RedirectResponse:
 @router.get("/registro", response_class=HTMLResponse)
 async def form_registro(request: Request) -> HTMLResponse:
     if await ciudadano_actual_portal(request) is not None:
-        return RedirectResponse("/portal/carpeta", status_code=303)
+        return RedirectResponse("/carpeta", status_code=303)
     return templates.TemplateResponse(request, "registro.html", {"ciudadano": None})
 
 
@@ -108,13 +115,13 @@ async def procesar_registro(
             request, "registro.html", {"ciudadano": None, "error": exc.mensaje, "valores": valores}, status_code=200
         )
 
-    return RedirectResponse("/portal/sesion?registrado=1", status_code=303)
+    return RedirectResponse("/sesion?registrado=1", status_code=303)
 
 
 @router.get("/sesion", response_class=HTMLResponse)
 async def form_sesion(request: Request) -> HTMLResponse:
     if await ciudadano_actual_portal(request) is not None:
-        return RedirectResponse("/portal/carpeta", status_code=303)
+        return RedirectResponse("/carpeta", status_code=303)
     contexto = {"ciudadano": None}
     if request.query_params.get("registrado"):
         contexto["mensaje_exito"] = "Tu carpeta se creo correctamente. Ya puedes iniciar sesion."
@@ -142,7 +149,7 @@ async def procesar_sesion(
             status_code=200,
         )
 
-    respuesta = RedirectResponse("/portal/carpeta", status_code=303)
+    respuesta = RedirectResponse("/carpeta", status_code=303)
     fijar_cookie_sesion(respuesta, access_token=resultado.access_token, expires_in=resultado.expires_in)
     return respuesta
 
@@ -150,7 +157,7 @@ async def procesar_sesion(
 @router.post("/salir")
 async def salir(request: Request) -> RedirectResponse:
     ciudadano = await ciudadano_actual_portal(request)
-    respuesta = RedirectResponse("/portal/sesion", status_code=303)
+    respuesta = RedirectResponse("/sesion", status_code=303)
     if ciudadano is not None:
         await cerrar_sesion(ciudadano_id=ciudadano.id, origen=_origen(request), correlation_id=_correlation_id(request))
     borrar_cookie_sesion(respuesta)
@@ -187,7 +194,7 @@ def _url_pagina_factory(filtros: dict, size: int):
         parametros = dict(base)
         parametros["page"] = str(pagina)
         parametros["size"] = str(size)
-        return "/portal/carpeta?" + urlencode(parametros)
+        return "/carpeta?" + urlencode(parametros)
 
     return _url
 
@@ -196,7 +203,7 @@ def _url_pagina_factory(filtros: dict, size: int):
 async def carpeta(request: Request) -> HTMLResponse:
     ciudadano = await ciudadano_actual_portal(request)
     if ciudadano is None:
-        return RedirectResponse("/portal/sesion", status_code=303)
+        return RedirectResponse("/sesion", status_code=303)
 
     filtros = _filtros_desde_query(request)
     try:
@@ -252,7 +259,7 @@ async def subir_documento(
 ) -> HTMLResponse:
     ciudadano = await ciudadano_actual_portal(request)
     if ciudadano is None:
-        return RedirectResponse("/portal/sesion", status_code=303)
+        return RedirectResponse("/sesion", status_code=303)
 
     contenido = await archivo.read()
     try:
@@ -298,7 +305,7 @@ async def subir_documento(
             status_code=200,
         )
 
-    return RedirectResponse("/portal/carpeta?subido=1", status_code=303)
+    return RedirectResponse("/carpeta?subido=1", status_code=303)
 
 
 # --- CU-06/CU-08/CU-11: detalle de un documento --------------------------------------
@@ -308,12 +315,12 @@ async def subir_documento(
 async def detalle_documento(request: Request, documento_id: uuid.UUID) -> HTMLResponse:
     ciudadano = await ciudadano_actual_portal(request)
     if ciudadano is None:
-        return RedirectResponse("/portal/sesion", status_code=303)
+        return RedirectResponse("/sesion", status_code=303)
 
     try:
         documento = await documentos_servicios.obtener_documento(ciudadano_id=ciudadano.id, documento_id=documento_id)
     except ErrorDeNegocio as exc:
-        return RedirectResponse(f"/portal/carpeta?error={exc.mensaje}", status_code=303)
+        return RedirectResponse(f"/carpeta?error={exc.mensaje}", status_code=303)
 
     return templates.TemplateResponse(request, "documento.html", {"ciudadano": ciudadano, "doc": documento})
 
@@ -322,14 +329,14 @@ async def detalle_documento(request: Request, documento_id: uuid.UUID) -> HTMLRe
 async def descargar_documento(request: Request, documento_id: uuid.UUID) -> RedirectResponse:
     ciudadano = await ciudadano_actual_portal(request)
     if ciudadano is None:
-        return RedirectResponse("/portal/sesion", status_code=303)
+        return RedirectResponse("/sesion", status_code=303)
 
     try:
         url, _ = await documentos_servicios.generar_descarga(
             ciudadano_id=ciudadano.id, documento_id=documento_id, correlation_id=_correlation_id(request)
         )
     except ErrorDeNegocio as exc:
-        return RedirectResponse(f"/portal/carpeta?error={exc.mensaje}", status_code=303)
+        return RedirectResponse(f"/carpeta?error={exc.mensaje}", status_code=303)
 
     return RedirectResponse(url, status_code=303)
 
@@ -338,7 +345,7 @@ async def descargar_documento(request: Request, documento_id: uuid.UUID) -> Redi
 async def eliminar_documento(request: Request, documento_id: uuid.UUID) -> HTMLResponse:
     ciudadano = await ciudadano_actual_portal(request)
     if ciudadano is None:
-        return RedirectResponse("/portal/sesion", status_code=303)
+        return RedirectResponse("/sesion", status_code=303)
 
     es_htmx = request.headers.get("hx-request") == "true"
     try:
@@ -348,24 +355,94 @@ async def eliminar_documento(request: Request, documento_id: uuid.UUID) -> HTMLR
     except ErrorDeNegocio as exc:
         if es_htmx:
             return HTMLResponse(f'<li class="documento-fila" role="alert">{exc.mensaje}</li>', status_code=200)
-        return RedirectResponse(f"/portal/carpeta?error={exc.mensaje}", status_code=303)
+        return RedirectResponse(f"/carpeta?error={exc.mensaje}", status_code=303)
 
     if es_htmx:
         return templates.TemplateResponse(request, "_documento_eliminado.html", {"doc_id": documento_id})
-    return RedirectResponse("/portal/carpeta?eliminado=1", status_code=303)
+    return RedirectResponse("/carpeta?eliminado=1", status_code=303)
 
 
 @router.post("/documentos/{documento_id}/autenticacion")
 async def solicitar_autenticacion_documento(request: Request, documento_id: uuid.UUID) -> RedirectResponse:
     ciudadano = await ciudadano_actual_portal(request)
     if ciudadano is None:
-        return RedirectResponse("/portal/sesion", status_code=303)
+        return RedirectResponse("/sesion", status_code=303)
 
     try:
         await documentos_servicios.solicitar_autenticacion(
             ciudadano_id=ciudadano.id, documento_id=documento_id, correlation_id=_correlation_id(request)
         )
     except ErrorDeNegocio as exc:
-        return RedirectResponse(f"/portal/carpeta?error={exc.mensaje}", status_code=303)
+        return RedirectResponse(f"/carpeta?error={exc.mensaje}", status_code=303)
 
-    return RedirectResponse(f"/portal/documentos/{documento_id}", status_code=303)
+    return RedirectResponse(f"/documentos/{documento_id}", status_code=303)
+
+
+# --- rutas viejas bajo /portal/... : redireccion permanente a la raiz ---------------
+#
+# El portal vivio bajo /portal/... antes de moverse a la raiz del dominio. Cualquier
+# enlace guardado (favorito, correo, historial del navegador) contra la forma vieja
+# sigue funcionando: se redirige de forma permanente (308, preserva metodo y cuerpo,
+# a diferencia de 301/302/303) hacia la ruta nueva equivalente, con la cadena de
+# consulta intacta.
+
+router_legado = APIRouter(prefix="/portal", tags=["portal"], include_in_schema=False)
+
+
+def _con_query(path: str, request: Request) -> str:
+    return f"{path}?{request.url.query}" if request.url.query else path
+
+
+@router_legado.api_route("", methods=["GET"])
+async def legado_raiz(request: Request) -> RedirectResponse:
+    return RedirectResponse(_con_query("/", request), status_code=308)
+
+
+@router_legado.api_route("/registro", methods=["GET", "POST"])
+async def legado_registro(request: Request) -> RedirectResponse:
+    return RedirectResponse(_con_query("/registro", request), status_code=308)
+
+
+@router_legado.api_route("/sesion", methods=["GET", "POST"])
+async def legado_sesion(request: Request) -> RedirectResponse:
+    return RedirectResponse(_con_query("/sesion", request), status_code=308)
+
+
+@router_legado.api_route("/salir", methods=["POST"])
+async def legado_salir(request: Request) -> RedirectResponse:
+    return RedirectResponse(_con_query("/salir", request), status_code=308)
+
+
+@router_legado.api_route("/carpeta", methods=["GET"])
+async def legado_carpeta(request: Request) -> RedirectResponse:
+    return RedirectResponse(_con_query("/carpeta", request), status_code=308)
+
+
+@router_legado.api_route("/carpeta/documentos", methods=["POST"])
+async def legado_carpeta_documentos(request: Request) -> RedirectResponse:
+    return RedirectResponse(_con_query("/carpeta/documentos", request), status_code=308)
+
+
+@router_legado.api_route("/documentos/{documento_id}", methods=["GET"])
+async def legado_documento(documento_id: str, request: Request) -> RedirectResponse:
+    return RedirectResponse(_con_query(f"/documentos/{documento_id}", request), status_code=308)
+
+
+@router_legado.api_route("/documentos/{documento_id}/descarga", methods=["GET"])
+async def legado_documento_descarga(documento_id: str, request: Request) -> RedirectResponse:
+    return RedirectResponse(_con_query(f"/documentos/{documento_id}/descarga", request), status_code=308)
+
+
+@router_legado.api_route("/documentos/{documento_id}/eliminar", methods=["POST"])
+async def legado_documento_eliminar(documento_id: str, request: Request) -> RedirectResponse:
+    return RedirectResponse(_con_query(f"/documentos/{documento_id}/eliminar", request), status_code=308)
+
+
+@router_legado.api_route("/documentos/{documento_id}/autenticacion", methods=["POST"])
+async def legado_documento_autenticacion(documento_id: str, request: Request) -> RedirectResponse:
+    return RedirectResponse(_con_query(f"/documentos/{documento_id}/autenticacion", request), status_code=308)
+
+
+@router_legado.api_route("/static/{ruta:path}", methods=["GET"])
+async def legado_static(ruta: str) -> RedirectResponse:
+    return RedirectResponse(f"/static/{ruta}", status_code=308)

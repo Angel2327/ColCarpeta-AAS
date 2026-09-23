@@ -4,19 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block titulo %}ColCarpeta{% endblock %} — ColCarpeta</title>
-  <link rel="stylesheet" href="/portal/static/estilos.css">
-  <script src="/portal/static/htmx.min.js" defer></script>
+  <link rel="stylesheet" href="/static/estilos.css">
+  <script src="/static/htmx.min.js" defer></script>
 </head>
 <body>
   <a class="saltar-al-contenido" href="#contenido">Saltar al contenido</a>
 
   <header class="encabezado">
     <div class="contenedor encabezado__barra">
-      <a class="encabezado__marca" href="{{ '/portal/carpeta' if ciudadano else '/portal/sesion' }}">ColCarpeta</a>
+      <a class="encabezado__marca" href="{{ '/carpeta' if ciudadano else '/sesion' }}">ColCarpeta</a>
       {% if ciudadano %}
       <nav class="encabezado__nav" aria-label="Navegacion principal">
-        <a href="/portal/carpeta">Mi carpeta</a>
-        <form method="post" action="/portal/salir" class="encabezado__salir">
+        <a href="/carpeta">Mi carpeta</a>
+        <form method="post" action="/salir" class="encabezado__salir">
           <button type="submit" class="boton-enlace">Cerrar sesion</button>
         </form>
       </nav>

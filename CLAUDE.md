@@ -534,12 +534,29 @@ cookie pero no invalida el token si se usó también contra la API directamente 
 comportamiento ya documentado para `DELETE /api/v1/sesion`). El portal no aparece en
 el esquema OpenAPI (`include_in_schema=False`): no es parte del contrato de la API.
 
+**El portal vive en la raíz del dominio, no bajo `/portal/...`.** Vivió ahí en un
+primer momento y se movió a la raíz el mismo día (2026-09-22), porque la raíz es lo
+primero que ve cualquiera que entre al dominio y dejarla en blanco (404) no tenía
+sentido. Rutas actuales: `/` (lleva a `/carpeta` si hay sesión, a `/sesion` si no),
+`/sesion`, `/registro`, `/carpeta`, `/carpeta/documentos`, `/documentos/{id}`,
+`/documentos/{id}/descarga`, `/documentos/{id}/eliminar`,
+`/documentos/{id}/autenticacion`, `/salir`. Los estáticos (HTMX, la hoja de estilos)
+están en `/static/...`. Nada de esto choca con `/api/...` (la API sigue exactamente
+donde estaba, es el contrato con los otros operadores y con las entidades emisoras),
+ni con `/health`, `/mock/...`, `/docs`, `/redoc` u `/openapi.json` -- se verificó
+generando el esquema OpenAPI (sigue en 19 rutas) y arrancando la aplicación sin
+errores de ruta duplicada. Cada ruta vieja bajo `/portal/...` (`app/portal/router.py`,
+`router_legado`) redirige de forma permanente (308, preserva método y cuerpo -- a
+diferencia de 301/302/303, que en la práctica convierten un `POST` en `GET`) hacia su
+equivalente nueva, con la cadena de consulta intacta, por si alguien guardó un
+enlace; incluye `/portal` (raíz vieja) y `/portal/static/{ruta}` (estáticos viejos).
+
 **`SameSite=Strict` es toda la protección contra falsificación de peticiones entre
 sitios (CSRF) de esta pasada -- no se agregó un token CSRF de doble envío aparte.**
 Con `Strict`, el navegador nunca adjunta la cookie en una petición que se origina en
 otro sitio, ni siquiera en una navegación de nivel superior (un enlace externo hacia el
 portal): cualquier formulario que un sitio atacante intente enviar hacia
-`/portal/carpeta/documentos`, `/portal/documentos/{id}/eliminar`, etc., llega sin la
+`/carpeta/documentos`, `/documentos/{id}/eliminar`, etc., llega sin la
 cookie, `ciudadano_actual_portal` no resuelve a nadie, y la operación termina en un
 redirect a iniciar sesión en vez de ejecutarse -- no hay ninguna petición de este
 portal que dependa de una cookie `Lax` o sin `SameSite` para funcionar. Es la defensa
@@ -615,7 +632,7 @@ visible de inmediato con la etiqueta "Temporal" y su nota de procedencia, el det
 muestra "Sin firma digital" (el PDF de prueba no está firmado) y la sección de
 autenticación ante GovCarpeta, la descarga devuelve exactamente los mismos bytes que
 se subieron, eliminar lo saca del listado con su mensaje de éxito, y cerrar sesión hace
-que `/portal/carpeta` vuelva a exigir inicio de sesión. Aparte, se verificaron
+que `/carpeta` vuelva a exigir inicio de sesión. Aparte, se verificaron
 directamente (renderizando `_macros.html` con Jinja2 en aislamiento, sin pasar por
 Docker) las seis combinaciones de `certificado`/`firma_valida` sobre las macros de
 presentación, para cubrir también los casos de firma válida e inválida que el
@@ -1009,21 +1026,27 @@ otros caminos que ya pasaban por `_recibir_transferencia`): los cuatro siguen si
 fallos.
 
 `scripts/probar_portal.py` ejercita el portal del ciudadano (AD-11) por sus pantallas
-HTML, contra `app-a` viva: registra una cédula de prueba por el formulario de
-`/portal/registro`, espera a que quede `ACTIVO`, intenta iniciar sesión con una
-contraseña incorrecta primero (confirma el mensaje en lenguaje claro), inicia sesión
-de verdad por `/portal/sesion` y confirma que la cookie de sesión queda fija en el
+HTML, contra `app-a` viva: confirma que `GET /` sin sesión lleva a iniciar sesión (en
+vez del 404 que devolvía antes de moverse a la raíz), registra una cédula de prueba
+por el formulario de `/registro`, espera a que quede `ACTIVO`, intenta iniciar sesión
+con una contraseña incorrecta primero (confirma el mensaje en lenguaje claro), inicia
+sesión de verdad por `/sesion` y confirma que la cookie de sesión queda fija en el
 cliente HTTP (`httpx.AsyncClient`, que conserva cookies entre peticiones igual que un
 navegador), sube un documento por el formulario de la carpeta y confirma que aparece
 de inmediato con la etiqueta "Temporal" y su nota de procedencia, entra al detalle y
 confirma "Sin firma digital" (el PDF de prueba no está firmado) y la sección de
 autenticación ante GovCarpeta, descarga el documento y compara los bytes exactos
 contra lo subido, lo elimina desde la carpeta y confirma el mensaje de éxito y que
-desaparece del listado, y cierra sesión confirmando que `/portal/carpeta` vuelve a
-exigir inicio de sesión. Encontró la trampa de la cookie `Secure` sobre HTTP simple
-descrita arriba (corregida con `PORTAL_COOKIE_SECURE=false` en el entorno de `app-a`
-de este archivo) -- ese fue el único bug real que encontró; el resto de la prueba pasó
-sin ajustes adicionales.
+desaparece del listado, confirma que ocho rutas viejas bajo `/portal/...` (raíz,
+carpeta con y sin cadena de consulta, sesión, registro, detalle y descarga de un
+documento, un estático) responden 308 con el `Location` correcto hacia su ruta nueva
+sin `follow_redirects` (para poder inspeccionar el código y el encabezado en vez de
+solo llegar al destino), y cierra sesión confirmando que `/carpeta` vuelve a exigir
+inicio de sesión. Encontró la trampa de la cookie `Secure` sobre HTTP simple descrita
+arriba (corregida con `PORTAL_COOKIE_SECURE=false` en el entorno de `app-a` de este
+archivo) -- ese fue el único bug real que encontró en su primera corrida; el resto de
+la prueba, incluida la extensión para el movimiento a la raíz, pasó sin ajustes
+adicionales.
 
 ## Convenciones
 
