@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block titulo %}Pedir un enlace nuevo{% endblock %}
+{% block contenido %}
+<h1>Pedir un enlace nuevo</h1>
+<p>Si tu enlace de primer acceso venció, pide uno nuevo con tu cédula o tu dirección de carpeta.</p>
+
+<div class="tarjeta">
+  {% if error %}
+  <p class="aviso aviso--error" role="alert">{{ error }}</p>
+  {% endif %}
+  {% if mensaje %}
+  <p class="aviso aviso--exito" role="status">{{ mensaje }}</p>
+  {% else %}
+  <form method="post" action="/primer-acceso/reenviar" novalidate>
+    <div class="campo">
+      <label for="usuario">Cédula o correo de tu carpeta</label>
+      <input type="text" id="usuario" name="usuario" required autofocus>
+    </div>
+    <button type="submit">Pedir enlace nuevo</button>
+  </form>
+  {% endif %}
+</div>
+
+<p><a href="/primer-acceso">Ya tengo un enlace</a></p>
+<p><a href="/sesion">Volver a iniciar sesión</a></p>
+{% endblock %}

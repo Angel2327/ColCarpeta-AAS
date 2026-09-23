@@ -127,6 +127,9 @@ services:
       - OPERATOR_NAME=Operador B (prueba)
       - PUBLIC_BASE_URL=http://app-b:8000
       - TRANSFERENCIA_EXIGIR_HTTPS=false
+      # AD-11: mismo motivo que en app-a -- estos contenedores hablan HTTP simple
+      # entre si, sin TLS. NUNCA se apaga en produccion ni en un .env real.
+      - PORTAL_COOKIE_SECURE=false
       - OUTBOX_INTERVALO_SEGUNDOS=3
       - DIRECTORIO_OPERADORES_REFRESCO_SEGUNDOS=5
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
@@ -256,6 +259,38 @@ services:
     command:
       - --base-url=http://app-a:8000
       - --database-url=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+
+  # scripts/probar_portal_segunda_pasada.py: segunda pasada del portal (AD-11) por las
+  # pantallas HTML -- notificaciones, perfil, segundo factor, sustituir un documento
+  # (CU-10) y el traslado a otro operador (CU-03) -- contra app-a viva, con
+  # mock-centralizador y app-b como destino real del traslado. No necesita el .env real
+  # ni acceso a la base: todo se verifica leyendo las paginas que devuelve el portal.
+  # Deja al ciudadano TRASLADADO en app-a; el primer acceso en el destino (app-b) se
+  # prueba aparte, en "prueba-portal-primer-acceso", porque el token real solo se
+  # puede extraer del log de app-b entre una corrida y otra.
+  prueba-portal-segunda-pasada:
+    build: .
+    depends_on:
+      - app-a
+      - app-b
+      - mock-centralizador
+    entrypoint: ["python", "scripts/probar_portal_segunda_pasada.py"]
+    command:
+      - --base-url=http://app-a:8000
+      - --operador-destino-id=test-operador-b
+
+  # scripts/probar_portal_primer_acceso.py: primer acceso por las pantallas HTML del
+  # portal (GET/POST /primer-acceso), con un token REAL de una transferencia -- a
+  # diferencia de "prueba-primer-acceso" (API JSON). El token se extrae del log de
+  # app-b despues de correr "prueba-portal-segunda-pasada":
+  #   docker compose -f docker-compose.test.yml logs app-b | grep -A3 "correo simulado"
+  #   docker compose -f docker-compose.test.yml run --rm prueba-portal-primer-acceso \
+  #     --base-url=http://app-b:8000 --token=<extraido> --usuario=<cedula>
+  prueba-portal-primer-acceso:
+    build: .
+    depends_on:
+      - app-b
+    entrypoint: ["python", "scripts/probar_portal_primer_acceso.py"]
 
   # scripts/probar_firma_digital.py: CU-09 (validacion de firma digital), sobre CU-05 y
   # CU-13. Genera con pyHanko un PDF firmado, uno firmado y luego alterado, y uno sin

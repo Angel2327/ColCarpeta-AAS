@@ -76,7 +76,7 @@ async def main() -> None:
         print("0. GET / sin sesion debe llevar a iniciar sesion (antes respondia 404)...")
         r = await cliente.get("/")
         print(f"   -> {r.status_code} (url final: {r.url})")
-        if r.status_code != 200 or "Iniciar sesion" not in r.text:
+        if r.status_code != 200 or "Iniciar sesión" not in r.text:
             fallos.append(f"raiz sin sesion: se esperaba terminar en iniciar sesion, llego a {r.url}")
 
         print(f"1. Registrando cedula {cedula} por el formulario del portal...")
@@ -92,7 +92,7 @@ async def main() -> None:
             },
         )
         print(f"   -> {r.status_code} (url final: {r.url})")
-        if r.status_code != 200 or "Iniciar sesion" not in r.text:
+        if r.status_code != 200 or "Iniciar sesión" not in r.text:
             fallos.append(f"registro: se esperaba terminar en la pantalla de inicio de sesion, llego a {r.url}")
             print(r.text[:2000])
 
@@ -116,7 +116,7 @@ async def main() -> None:
 
         print("5. GET /carpeta debe mostrar la carpeta vacia...")
         r = await cliente.get("/carpeta")
-        if r.status_code != 200 or "Todavia no tienes documentos" not in r.text:
+        if r.status_code != 200 or "Todavía no tienes documentos" not in r.text:
             fallos.append("carpeta vacia: no se encontro el mensaje de carpeta vacia")
 
         print("6. Subiendo un documento por el formulario de la carpeta...")
@@ -129,11 +129,11 @@ async def main() -> None:
         if r.status_code != 200 or "Certificado de prueba del portal" not in r.text:
             fallos.append("subir documento: no aparece en la carpeta tras subirlo")
             print(r.text[:3000])
-        if "El documento se subio correctamente" not in r.text:
+        if "El documento se subió correctamente" not in r.text:
             fallos.append("subir documento: no se muestra el mensaje de exito")
         if "Temporal" not in r.text:
             fallos.append("subir documento: se esperaba la etiqueta 'Temporal' (lo subio el ciudadano)")
-        if "Informacion proporcionada por ti" not in r.text and "Informaci" not in r.text:
+        if "Información proporcionada por ti" not in r.text:
             fallos.append("subir documento: se esperaba la nota en letra pequena de procedencia")
 
         coincidencia = re.search(r"/documentos/([0-9a-fA-F-]{36})", r.text)
@@ -144,13 +144,21 @@ async def main() -> None:
         print(f"   documento_id={documento_id}")
 
         print("7. GET del detalle del documento: procedencia y firma en lenguaje de persona...")
-        r = await cliente.get(f"/documentos/{documento_id}")
+
+        async def _firma_resuelta():
+            resp = await cliente.get(f"/documentos/{documento_id}")
+            if resp.status_code == 200 and "Validando firma" not in resp.text:
+                return resp
+            return None
+
+        # La validacion de firma corre en segundo plano (AD-05, outbox); justo despues
+        # de subir puede seguir PENDIENTE un instante -- se espera a que se resuelva en
+        # vez de asumir que ya termino, igual que se hace mas abajo con "ciudadano ACTIVO".
+        r = await _esperar("validacion de firma resuelta", _firma_resuelta, intentos=15, espera_segundos=2.0)
         print(f"   -> {r.status_code}")
-        if r.status_code != 200:
-            fallos.append("detalle del documento: se esperaba 200")
         if "Sin firma digital" not in r.text:
             fallos.append("detalle del documento: se esperaba 'Sin firma digital' (el PDF de prueba no esta firmado)")
-        if "Autenticacion ante GovCarpeta" not in r.text:
+        if "Autenticación ante GovCarpeta" not in r.text:
             fallos.append("detalle del documento: falta la seccion de autenticacion ante GovCarpeta")
 
         print("8. Descargando el documento (debe llegar el mismo contenido que se subio)...")
@@ -162,7 +170,7 @@ async def main() -> None:
         print("9. Eliminando el documento desde la carpeta (borrado diferido, CU-08)...")
         r = await cliente.post(f"/documentos/{documento_id}/eliminar")
         print(f"   -> {r.status_code} (url final: {r.url})")
-        if r.status_code != 200 or "El documento se elimino de tu carpeta" not in r.text:
+        if r.status_code != 200 or "El documento se eliminó de tu carpeta" not in r.text:
             fallos.append("eliminar documento: no se mostro el mensaje de exito esperado")
         if documento_id in r.text:
             fallos.append("eliminar documento: el documento eliminado no deberia seguir apareciendo en el listado")
@@ -189,11 +197,11 @@ async def main() -> None:
 
         print("11. Cerrando sesion y confirmando que /carpeta vuelve a pedir login...")
         r = await cliente.post("/salir")
-        if r.status_code != 200 or "Iniciar sesion" not in r.text:
+        if r.status_code != 200 or "Iniciar sesión" not in r.text:
             fallos.append("cerrar sesion: no se termino en la pantalla de inicio de sesion")
 
         r = await cliente.get("/carpeta")
-        if "Iniciar sesion" not in r.text:
+        if "Iniciar sesión" not in r.text:
             fallos.append("tras cerrar sesion, /carpeta deberia redirigir a iniciar sesion")
 
     print()

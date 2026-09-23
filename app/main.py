@@ -47,6 +47,10 @@ from app.mock.registraduria import router as registraduria_router
 from app.notificaciones.router import router as notificaciones_router
 from app.portal.router import router as portal_router
 from app.portal.router import router_legado as portal_router_legado
+from app.portal.router_notificaciones import router as portal_notificaciones_router
+from app.portal.router_perfil import router as portal_perfil_router
+from app.portal.router_primer_acceso import router as portal_primer_acceso_router
+from app.portal.router_traslado import router as portal_traslado_router
 
 
 @asynccontextmanager
@@ -118,6 +122,10 @@ app.include_router(traslado_router)
 # que expone FastAPI (/docs, /redoc, /openapi.json). portal_router_legado redirige de
 # forma permanente cada ruta vieja bajo /portal/... hacia su equivalente nueva.
 app.include_router(portal_router)
+app.include_router(portal_notificaciones_router)
+app.include_router(portal_perfil_router)
+app.include_router(portal_traslado_router)
+app.include_router(portal_primer_acceso_router)
 app.include_router(portal_router_legado)
 # AD-11: el portal sirve sus propios estaticos (HTMX vendorizado, hoja de estilos) desde
 # el mismo proceso -- ninguna dependencia de red en tiempo de ejecucion.

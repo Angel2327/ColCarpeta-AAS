@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block titulo %}Mi perfil{% endblock %}
+{% block contenido %}
+<h1>Mi perfil</h1>
+
+{% if error %}
+<p class="aviso aviso--error" role="alert">{{ error }}</p>
+{% endif %}
+
+<section class="tarjeta" aria-labelledby="titulo-datos">
+  <h2 id="titulo-datos">Mis datos</h2>
+  <dl class="detalle">
+    <dt>Cédula</dt>
+    <dd>{{ ciudadano.id }}</dd>
+    <dt>Dirección de carpeta</dt>
+    <dd>{{ ciudadano.email_carpeta or "(pendiente)" }}</dd>
+  </dl>
+  <p class="nota-pequena">La cédula y la dirección de carpeta son permanentes: no se pueden cambiar.</p>
+
+  <form method="post" action="/perfil" novalidate>
+    <div class="campo">
+      <label for="direccion">Dirección</label>
+      <input type="text" id="direccion" name="direccion" value="{{ ciudadano.direccion }}" required>
+    </div>
+    <div class="campo">
+      <label for="telefono">Teléfono</label>
+      <input type="tel" id="telefono" name="telefono" value="{{ ciudadano.telefono }}" required>
+    </div>
+    <div class="campo">
+      <label for="email_personal">Correo personal</label>
+      <input type="email" id="email_personal" name="email_personal" value="{{ ciudadano.email_personal }}" required>
+    </div>
+    <button type="submit">Guardar cambios</button>
+  </form>
+</section>
+
+<section class="tarjeta" aria-labelledby="titulo-cuota">
+  <h2 id="titulo-cuota">Espacio usado</h2>
+  {% set porcentaje = (100 * usado_bytes / cuota_bytes) if cuota_bytes else 0 %}
+  <div class="barra-cuota" role="progressbar" aria-valuenow="{{ porcentaje | round(0, 'floor') }}" aria-valuemin="0" aria-valuemax="100">
+    <div class="barra-cuota__relleno{{ ' barra-cuota__relleno--llena' if porcentaje >= 90 else '' }}" style="width: {{ [porcentaje, 100] | min }}%"></div>
+  </div>
+  <p class="nota-pequena">{{ (usado_bytes / 1048576) | round(1) }} MB de {{ (cuota_bytes / 1048576) | round(0) }} MB usados. Los documentos certificados no cuentan contra este límite.</p>
+</section>
+
+<section class="tarjeta" aria-labelledby="titulo-seguridad">
+  <h2 id="titulo-seguridad">Seguridad</h2>
+  <p>
+    Segundo factor:
+    {% if ciudadano.totp_estado and ciudadano.totp_estado.value == "HABILITADO" %}
+    <span class="etiqueta etiqueta--certificado">Habilitado</span>
+    {% else %}
+    <span class="etiqueta etiqueta--temporal">Deshabilitado</span>
+    {% endif %}
+  </p>
+  <a class="boton boton--secundario" href="/perfil/totp">Administrar segundo factor</a>
+</section>
+
+<section class="tarjeta" aria-labelledby="titulo-traslado">
+  <h2 id="titulo-traslado">Trasladar mi carpeta</h2>
+  <p>Puedes llevar tu carpeta completa a otro operador de Carpeta Ciudadana.</p>
+  <a class="boton boton--secundario" href="/perfil/traslado">Ver opciones de traslado</a>
+</section>
+{% endblock %}

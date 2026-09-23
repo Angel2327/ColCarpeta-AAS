@@ -13,7 +13,7 @@
 
 {% macro nota_procedencia(doc) %}
   {% if not doc.certificado %}
-  <span class="nota-pequena">Informacion proporcionada por ti.</span>
+  <span class="nota-pequena">Información proporcionada por ti.</span>
   {% endif %}
 {% endmacro %}
 
@@ -21,8 +21,8 @@
   {% if doc.firma_valida is none %}
   <span class="etiqueta etiqueta--firma-ausente">Sin firma digital</span>
   {% elif doc.firma_valida %}
-  <span class="etiqueta etiqueta--firma-valida">Firma digital valida</span>
+  <span class="etiqueta etiqueta--firma-valida">Firma digital válida</span>
   {% else %}
-  <span class="etiqueta etiqueta--firma-invalida">Firma digital invalida</span>
+  <span class="etiqueta etiqueta--firma-invalida">Firma digital inválida</span>
   {% endif %}
 {% endmacro %}

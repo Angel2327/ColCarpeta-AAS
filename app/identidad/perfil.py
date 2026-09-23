@@ -1,9 +1,12 @@
-"""Datos del ciudadano y estado de su carpeta.
+"""Datos del ciudadano y estado de su carpeta -- ruta JSON de la API.
 
 Ver docs/especificacion.md, "Contrato de la API propia" > "Ciudadano y sesion":
 `GET /api/v1/perfil` ya estaba documentado ahi pero nunca se habia implementado.
 `PATCH` es una extension propia para los datos de contacto que la especificacion no fija
 como inmutables (a diferencia de la cedula y `email_carpeta`, ver AD-10).
+
+La lógica de negocio vive en `app.identidad.perfil_servicios`, compartida con la
+pantalla de perfil del portal (`app.portal`) -- ver AD-11.
 """
 
 from __future__ import annotations
@@ -12,13 +15,10 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_config
-from app.db import SessionLocal
+from app.identidad import perfil_servicios
 from app.identidad.dependencias import ciudadano_actual
-from app.models import Auditoria, Ciudadano, Documento, EstadoCiudadano, EstadoDocumento, EstadoTotp
+from app.models import Ciudadano, EstadoCiudadano, EstadoTotp
 
 router = APIRouter(prefix="/api/v1/perfil", tags=["perfil"])
 
@@ -48,22 +48,6 @@ def _correlation_id(request: Request) -> str | None:
     return getattr(request.state, "correlation_id", None)
 
 
-async def _usado_bytes(session: AsyncSession, ciudadano_id: int) -> int:
-    # Mismo calculo que la carga de documentos (app.documentos.router): solo cuenta lo
-    # temporal y ACTIVO -- los certificados no consumen cuota, y lo reemplazado (CU-10)
-    # o eliminado (CU-08) ya no forma parte de la carpeta vigente del ciudadano.
-    r = await session.execute(
-        select(func.coalesce(func.sum(Documento.tamano_bytes), 0))
-        .select_from(Documento)
-        .where(
-            Documento.ciudadano_id == ciudadano_id,
-            Documento.certificado.is_(False),
-            Documento.estado == EstadoDocumento.ACTIVO,
-        )
-    )
-    return int(r.scalar_one())
-
-
 def _a_respuesta(ciudadano: Ciudadano, *, cuota_bytes: int, usado_bytes: int) -> RespuestaPerfil:
     return RespuestaPerfil(
         id=ciudadano.id,
@@ -88,12 +72,8 @@ async def obtener_perfil(actual: Ciudadano = Depends(ciudadano_actual)) -> Respu
     Incluye la cuota de almacenamiento de documentos temporales y cuánto se ha
     consumido de ella; los documentos certificados no cuentan contra la cuota.
     """
-    cfg = get_config()
-    async with SessionLocal() as session:
-        ciudadano = await session.get(Ciudadano, actual.id)
-        assert ciudadano is not None
-        usado = await _usado_bytes(session, ciudadano.id)
-        return _a_respuesta(ciudadano, cuota_bytes=cfg.cuota_ciudadano_bytes, usado_bytes=usado)
+    ciudadano, cuota_bytes, usado_bytes = await perfil_servicios.obtener_perfil(ciudadano_id=actual.id)
+    return _a_respuesta(ciudadano, cuota_bytes=cuota_bytes, usado_bytes=usado_bytes)
 
 
 @router.patch("", response_model=RespuestaPerfil)
@@ -106,34 +86,11 @@ async def actualizar_perfil(
     sin modificar. La cédula y la dirección de carpeta (`email_carpeta`) son
     permanentes y no se pueden cambiar por esta vía.
     """
-    cfg = get_config()
-    async with SessionLocal() as session:
-        ciudadano = await session.get(Ciudadano, actual.id)
-        assert ciudadano is not None
-
-        cambios: dict[str, str] = {}
-        if solicitud.direccion is not None:
-            ciudadano.direccion = solicitud.direccion
-            cambios["direccion"] = solicitud.direccion
-        if solicitud.telefono is not None:
-            ciudadano.telefono = solicitud.telefono
-            cambios["telefono"] = solicitud.telefono
-        if solicitud.email_personal is not None:
-            ciudadano.email_personal = str(solicitud.email_personal)
-            cambios["email_personal"] = str(solicitud.email_personal)
-
-        if cambios:
-            session.add(
-                Auditoria(
-                    actor=str(ciudadano.id),
-                    accion="perfil.actualizado",
-                    recurso=str(ciudadano.id),
-                    ciudadano_id=ciudadano.id,
-                    correlation_id=_correlation_id(request),
-                    detalle=cambios,
-                )
-            )
-            await session.commit()
-
-        usado = await _usado_bytes(session, ciudadano.id)
-        return _a_respuesta(ciudadano, cuota_bytes=cfg.cuota_ciudadano_bytes, usado_bytes=usado)
+    ciudadano, cuota_bytes, usado_bytes = await perfil_servicios.actualizar_perfil(
+        ciudadano_id=actual.id,
+        direccion=solicitud.direccion,
+        telefono=solicitud.telefono,
+        email_personal=str(solicitud.email_personal) if solicitud.email_personal is not None else None,
+        correlation_id=_correlation_id(request),
+    )
+    return _a_respuesta(ciudadano, cuota_bytes=cuota_bytes, usado_bytes=usado_bytes)

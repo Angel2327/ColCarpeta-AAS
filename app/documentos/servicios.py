@@ -28,7 +28,16 @@ from app.db import SessionLocal
 from app.documentos.almacenamiento import FalloAlmacenamiento, eliminar_objeto, generar_clave, generar_url_descarga, subir_objeto
 from app.documentos.tipos import TIPOS_PERMITIDOS, detectar_content_type
 from app.errors import ErrorDeNegocio
-from app.models import Auditoria, Ciudadano, Documento, EstadoAutenticacionDocumento, EstadoCiudadano, EstadoDocumento, Outbox
+from app.models import (
+    Auditoria,
+    Ciudadano,
+    Documento,
+    EstadoAutenticacionDocumento,
+    EstadoCiudadano,
+    EstadoDocumento,
+    EstadoOutbox,
+    Outbox,
+)
 
 TAMANO_PAGINA_DEFECTO = 20
 TAMANO_PAGINA_MAXIMO = 100
@@ -36,7 +45,7 @@ TAMANO_PAGINA_MAXIMO = 100
 
 def _exigir_activo(ciudadano: Ciudadano) -> None:
     if ciudadano.estado != EstadoCiudadano.ACTIVO:
-        raise ErrorDeNegocio("ESTADO_INVALIDO", "Tu carpeta no esta activa.")
+        raise ErrorDeNegocio("ESTADO_INVALIDO", "Tu carpeta no está activa.")
 
 
 def _a_datetime_utc(d: date, *, fin_del_dia: bool = False) -> datetime:
@@ -89,7 +98,7 @@ async def cargar_documento(
     if len(contenido) > cfg.tamano_maximo_archivo_bytes:
         raise ErrorDeNegocio(
             "ARCHIVO_DEMASIADO_GRANDE",
-            "El archivo excede el tamano maximo permitido.",
+            "El archivo excede el tamaño máximo permitido.",
             detalle={"limite_bytes": cfg.tamano_maximo_archivo_bytes},
         )
 
@@ -98,7 +107,7 @@ async def cargar_documento(
     if content_type is None:
         raise ErrorDeNegocio(
             "TIPO_NO_PERMITIDO",
-            "El tipo de archivo no esta permitido.",
+            "El tipo de archivo no está permitido.",
             detalle={"tipos_permitidos": list(TIPOS_PERMITIDOS)},
         )
 
@@ -144,7 +153,7 @@ async def cargar_documento(
         if usado + len(contenido) > cfg.cuota_ciudadano_bytes:
             raise ErrorDeNegocio(
                 "CUOTA_AGOTADA",
-                "La cuota de documentos temporales esta agotada.",
+                "La cuota de documentos temporales está agotada.",
                 detalle={"cuota_bytes": cfg.cuota_ciudadano_bytes, "usado_bytes": usado},
             )
 
@@ -291,7 +300,7 @@ async def eliminar_documento(*, ciudadano_id: int, documento_id: uuid.UUID, corr
         if documento.certificado:
             raise ErrorDeNegocio("DOCUMENTO_CERTIFICADO", "No se puede eliminar un documento certificado.")
         if documento.estado != EstadoDocumento.ACTIVO:
-            raise ErrorDeNegocio("ESTADO_INVALIDO", "El documento ya fue reemplazado por una version mas reciente.")
+            raise ErrorDeNegocio("ESTADO_INVALIDO", "El documento ya fue reemplazado por una versión más reciente.")
 
         documento.estado = EstadoDocumento.ELIMINADO
         documento.purgar_despues_de = datetime.now(timezone.utc) + timedelta(days=cfg.purge_delay_days)
@@ -353,7 +362,7 @@ async def solicitar_autenticacion(
         # para ver su historia, pero esto es una operacion nueva sobre el, no una
         # lectura -- se rechaza sin importar si ya tenia un resultado guardado de antes.
         if documento.estado != EstadoDocumento.ACTIVO:
-            raise ErrorDeNegocio("ESTADO_INVALIDO", "El documento ya no esta vigente: fue reemplazado por una version mas reciente.")
+            raise ErrorDeNegocio("ESTADO_INVALIDO", "El documento ya no está vigente: fue reemplazado por una versión más reciente.")
 
         # A1: ya autenticado, no se reenvia; se muestra el resultado guardado.
         if documento.estado_autenticacion == EstadoAutenticacionDocumento.AUTENTICADO:
@@ -396,3 +405,21 @@ async def solicitar_autenticacion(
 async def consultar_autenticacion(*, ciudadano_id: int, documento_id: uuid.UUID) -> Documento:
     async with SessionLocal() as session:
         return await obtener_documento_propio(session, documento_id, ciudadano_id)
+
+
+async def firma_en_validacion(*, documento_id: uuid.UUID) -> bool:
+    """Para el portal: si hay una fila `validarFirma` (CU-09) todavía pendiente o en
+    proceso para este documento -- a diferencia de `firma_valida`, que queda en NULL
+    tanto mientras se valida como para siempre si el archivo no tiene firma, esto sí
+    distingue "todavía corriendo" de "no hay nada que validar". Deja de ser cierto en
+    cuanto la bandeja de salida resuelve la fila (`COMPLETADO` o `FALLIDO`), sea cual
+    sea el resultado -- el portal deja de sondear en ese momento."""
+    async with SessionLocal() as session:
+        resultado = await session.execute(
+            select(Outbox.id).where(
+                Outbox.operacion == "validarFirma",
+                Outbox.estado.in_((EstadoOutbox.PENDIENTE, EstadoOutbox.EN_PROCESO)),
+                Outbox.payload["documento_id"].astext == str(documento_id),
+            )
+        )
+        return resultado.first() is not None

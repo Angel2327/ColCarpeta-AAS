@@ -86,7 +86,7 @@ async def registrar_ciudadano(
         existente = await session.get(Ciudadano, solicitud.cedula)
 
         if existente is not None and existente.estado in ESTADOS_YA_REGISTRADO:
-            raise ErrorDeNegocio("CIUDADANO_YA_REGISTRADO", "La cedula ya esta registrada en ColCarpeta.")
+            raise ErrorDeNegocio("CIUDADANO_YA_REGISTRADO", "La cédula ya está registrada en ColCarpeta.")
 
         if existente is not None and existente.estado == EstadoCiudadano.PENDIENTE_CENTRALIZADOR:
             # A1: se reanuda sin duplicar el registro ni la entrada de bandeja de salida.
@@ -157,7 +157,7 @@ async def registrar_ciudadano(
                 )
             )
             await session.commit()
-            raise ErrorDeNegocio("IDENTIDAD_NO_VERIFICADA", "La Registraduria no pudo confirmar tu identidad.")
+            raise ErrorDeNegocio("IDENTIDAD_NO_VERIFICADA", "La Registraduría no pudo confirmar tu identidad.")
 
         # --- E1/E4: validateCitizen, unica llamada sincrona al centralizador ----------
         resultado_validacion = None
@@ -177,7 +177,7 @@ async def registrar_ciudadano(
             # temporal y no se persiste nada.
             raise ErrorDeNegocio(
                 "CENTRALIZADOR_NO_DISPONIBLE",
-                "El centralizador del MinTIC no esta disponible en este momento. Intenta de nuevo en unos minutos.",
+                "El centralizador del MinTIC no está disponible en este momento. Intenta de nuevo en unos minutos.",
             )
 
         assert resultado_validacion is not None
@@ -196,7 +196,7 @@ async def registrar_ciudadano(
             await session.commit()
             raise ErrorDeNegocio(
                 "CIUDADANO_YA_AFILIADO",
-                "El ciudadano ya esta afiliado a otro operador.",
+                "El ciudadano ya está afiliado a otro operador.",
                 detalle={"operador_actual": resultado_validacion.mensaje},
             )
 
@@ -375,7 +375,7 @@ async def iniciar_sesion(
                 detalle={"origen": origen},
             )
             await session.commit()
-            raise ErrorDeNegocio("CREDENCIALES_INVALIDAS", "Usuario o contrasena incorrectos.")
+            raise ErrorDeNegocio("CREDENCIALES_INVALIDAS", "Usuario o contraseña incorrectos.")
 
         assert ciudadano is not None
 
@@ -390,7 +390,7 @@ async def iniciar_sesion(
             )
             await session.commit()
             mensaje = (
-                "Tu carpeta esta en proceso de traslado a otro operador."
+                "Tu carpeta está en proceso de traslado a otro operador."
                 if ciudadano.estado == EstadoCiudadano.EN_TRANSFERENCIA
                 else "Tu carpeta ya fue trasladada a otro operador."
             )
@@ -401,7 +401,7 @@ async def iniciar_sesion(
         if segundo_factor_habilitado:
             if not solicitud.codigo_totp:
                 # No es E1 ni E2: la contrasena ya se verifico, solo falta el codigo.
-                raise ErrorDeNegocio("SEGUNDO_FACTOR_REQUERIDO", "Se requiere el codigo del segundo factor.")
+                raise ErrorDeNegocio("SEGUNDO_FACTOR_REQUERIDO", "Se requiere el código del segundo factor.")
 
             # --- E2: codigo TOTP invalido o vencido ---------------------------------
             if not verificar_codigo(ciudadano, solicitud.codigo_totp, cfg):
@@ -413,7 +413,7 @@ async def iniciar_sesion(
                     detalle={"origen": origen},
                 )
                 await session.commit()
-                raise ErrorDeNegocio("SEGUNDO_FACTOR_INVALIDO", "Codigo del segundo factor invalido o vencido.")
+                raise ErrorDeNegocio("SEGUNDO_FACTOR_INVALIDO", "Código del segundo factor inválido o vencido.")
 
         # --- A2: primer inicio de sesion exitoso ------------------------------------
         r = await session.execute(

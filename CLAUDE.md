@@ -32,13 +32,15 @@ bandeja de salida, envío y recepción de transferencias) · `app/mock/registrad
 perfil) · `app/documentos/` (almacenamiento S3, detección de tipo, rutas, autenticación,
 búsqueda, eliminación y sustitución de documentos, depósito por entidad emisora,
 validación de firma digital con pyHanko) · `app/notificaciones/` (envío simulado y
-centro de notificaciones, CU-17) · `app/portal/` (AD-11: pantallas HTML de iniciar
-sesión, registro y la carpeta -- primera pasada) · `scripts/limpiar_prueba.py` ·
+centro de notificaciones, CU-17) · `app/portal/` (AD-11: todas las pantallas del
+ciudadano -- sesión, registro, carpeta, notificaciones, perfil, segundo factor,
+traslado, primer acceso) · `scripts/limpiar_prueba.py` ·
 `scripts/probar_transferencia.py` · `scripts/probar_envio_transferencia.py` ·
 `scripts/mock_centralizador.py` · `scripts/probar_carpeta_completa.py` ·
 `scripts/alta_entidad_emisora.py` · `scripts/probar_colision_email.py` ·
 `scripts/probar_firma_digital.py` · `scripts/probar_firma_transferencia.py` ·
-`scripts/probar_portal.py`.
+`scripts/probar_portal.py` · `scripts/probar_portal_segunda_pasada.py` ·
+`scripts/probar_portal_primer_acceso.py`.
 
 **Los cuatro flujos obligatorios de la entrega están implementados y probados de punta
 a punta contra el sistema real del MinTIC.**
@@ -102,7 +104,10 @@ Cubre los tres desenlaces: `validateCitizen` confirma el destino (→ `CONFIRMAD
 programada, igual que `req_status=1`), `validateCitizen` dice disponible (→ `FALLIDA` +
 `registerCitizen` reencolado, igual que `req_status=0`), y el caso ambiguo (200 pero sin
 nombrar al destino: se queda `ENVIADA`, no se resuelve sola, y queda auditado como
-`transferencia.reconciliacion_ambigua`). Los tres pasaron.
+`transferencia.reconciliacion_ambigua`). Los tres pasaron. **Este diseño de tres
+desenlaces quedó reemplazado el 2026-09-23** por uno de solo dos preguntas ("¿sigue
+siendo nuestro?"), que elimina el caso ambiguo -- ver más abajo, en el bloque fechado
+2026-09-23.
 
 **Tres bugs reales encontrados y corregidos al probar CU-03 de punta a punta
 (2026-09-22), ninguno hipotético:**
@@ -649,6 +654,184 @@ volvía a mostrar el formulario de inicio de sesión vacío -- hasta confirmar q
 cookie sí se fijaba en la respuesta pero nunca volvía en la petición siguiente.
 Corregido agregando `PORTAL_COOKIE_SECURE=false` al entorno de `app-a` en
 `docker-compose.test.yml`, mismo patrón ya usado para `TRANSFERENCIA_EXIGIR_HTTPS`.
+**La misma trampa volvió a aparecer con `app-b` al probar la segunda pasada** (ver
+abajo): faltaba la misma variable en el entorno de `app-b`, que hasta ahora nunca había
+servido pantallas del portal en las pruebas de Docker. Corregida de la misma forma.
+
+**Portal del ciudadano, segunda pasada, implementada y probada de punta a punta el
+2026-09-23.** Las seis pantallas que quedaban pendientes: notificaciones (CU-17, con
+el contador de no leídas visible en la navegación de cualquier pantalla), perfil (datos
+y cuota), segundo factor (habilitar/confirmar/deshabilitar TOTP), traslado a otro
+operador (CU-03), primer acceso por token y su reenvío, y sustituir un documento
+temporal (CU-10, que había quedado sin pantalla en la primera pasada). Mismo patrón que
+la primera pasada en todo: capa de servicios compartida entre la API JSON y el portal,
+ninguna llamada HTTP del portal a sí mismo, plantillas Jinja2 + HTMX.
+
+Cinco módulos nuevos de servicios, cada uno extraído de la ruta JSON que ya existía
+(el mismo patrón de extracción de la primera pasada, ahora aplicado a lo que quedaba):
+`app/notificaciones/servicios.py` (de `app/notificaciones/router.py`),
+`app/identidad/perfil_servicios.py` (de `app/identidad/perfil.py` y
+`app/identidad/perfil_totp.py` juntos, porque el portal los presenta como una sola
+sección "perfil y seguridad"), `app/identidad/primer_acceso_servicios.py` (de
+`app/identidad/primer_acceso.py`, incluido el modelo Pydantic `SolicitudPrimerAcceso`
+con su validador de formato de contraseña, movido junto con la función para que el
+portal comparta la misma regla sin repetirla) y
+`app/interoperabilidad/traslado_servicios.py` (de la parte `router_propio` de
+`app/interoperabilidad/transferencias.py` -- CU-16, en el mismo archivo, no se tocó:
+sigue con su propio formato de intercambio, ajeno al portal). Las cuatro rutas JSON
+quedaron como envoltorios delgados, igual que en la primera pasada; se verificó de
+nuevo que el esquema OpenAPI sigue en las mismas 19 rutas.
+
+Cinco archivos nuevos de rutas del portal, cada uno con su propio `APIRouter` incluido
+por separado en `app/main.py` (en vez de seguir agregando todo a
+`app/portal/router.py`, que ya llevaba las pantallas de la primera pasada más las de
+sustituir documento y el estado en vivo de un documento, que sí se quedaron ahí por ser
+extensiones directas de la carpeta): `app/portal/router_notificaciones.py`,
+`app/portal/router_perfil.py`, `app/portal/router_traslado.py` y
+`app/portal/router_primer_acceso.py`. Ninguno de los cuatro tiene rutas viejas que
+redirigir (`router_legado`): son pantallas nuevas, nunca vivieron en otro lado.
+
+**Estado legible de lo que corre por detrás, con HTMX, sin recargar a ciegas:**
+- El detalle de un documento (`_documento_estado.html`) sondea
+  `GET /documentos/{id}/estado` cada 5 s mientras la firma todavía se está validando
+  (`app.documentos.servicios.firma_en_validacion`, nueva: consulta si existe una fila
+  `outbox` de `validarFirma` para ese documento todavía `PENDIENTE`/`EN_PROCESO` --
+  distingue "se está validando" de "no hay nada que validar", que `firma_valida=NULL`
+  por sí solo no puede distinguir) o mientras `estado_autenticacion` sigue `PENDIENTE`.
+  Dejar de sondear es automático: el fragmento devuelto deja de traer el atributo
+  `hx-trigger` en cuanto ambas cosas se resuelven.
+- El traslado (`_traslado_estado.html`) sondea `GET /perfil/traslado/estado` cada 5 s
+  mientras el ciudadano está `EN_TRANSFERENCIA` o la `Transferencia` sigue `ENVIADA` --
+  las dos condiciones por separado porque la fila `Transferencia` la crea recién el
+  manejador de outbox, un rato después de que la ruta ya marcó al ciudadano
+  `EN_TRANSFERENCIA`; sin contar también el estado del ciudadano, la pantalla mostraría
+  "tu carpeta no está activa" en esa ventana en vez de "tu traslado está en proceso" --
+  encontrado y corregido durante esta misma tarea, antes de la prueba en Docker, al
+  revisar el código, no por una prueba que lo haya expuesto.
+- El contador de notificaciones en la navegación (`_notificaciones_contador.html`,
+  dentro de `base.html`, visible en cualquier pantalla autenticada) sondea
+  `GET /notificaciones/contador` cada 30 s, siempre, sin condición de parada: no hay un
+  estado "resuelto" para una bandeja de notificaciones.
+
+**El traslado (CU-03) es la operación más grave del sistema y así se trata en la
+pantalla.** `GET /perfil/traslado` nunca deja escribir el operador destino a mano: es
+un `<select>` sobre `traslado_servicios.listar_operadores_transferibles()` (los del
+directorio con `transfer_api_url`, filtrados por `https://` si
+`TRANSFERENCIA_EXIGIR_HTTPS` lo exige). El formulario exige además una casilla de
+confirmación explícita (`confirmar`), verificada tanto por el atributo `required` del
+navegador como -- la protección real -- del lado del servidor: sin la casilla marcada
+(o con una petición cruda que la omita), `POST /perfil/traslado` la rechaza con el mismo
+mensaje en lenguaje claro, sin siquiera mirar si el operador elegido existe.
+
+**Sustituir un documento (CU-10) reutiliza `documentos_servicios.cargar_documento` tal
+cual**, con `sustituye_a` fijado al documento que se está reemplazando: no fue necesario
+tocar la capa de servicios de documentos para esto, solo agregar las dos rutas del
+portal (`GET`/`POST /documentos/{id}/sustituir`, en `app/portal/router.py`) y su
+plantilla. La ruta rechaza (con un redirect a un mensaje en lenguaje claro) sustituir un
+documento certificado o que ya no esté `ACTIVO`, aunque esa misma validación ya la hace
+`resolver_sustitucion` del lado del servicio -- es una comprobación redundante a
+propósito, para no mostrarle al ciudadano un formulario que de todas formas fallaría al
+enviarlo.
+
+Probado de punta a punta con dos scripts nuevos, contra `app-a`/`app-b`/
+`mock-centralizador` reales en Docker:
+
+- `scripts/probar_portal_segunda_pasada.py`: registro, login, subir un documento,
+  sustituirlo (CU-10, verifica que el original queda consultable como reemplazado),
+  notificaciones (listar, marcar como leída, el contador), perfil (consultar y
+  actualizar), segundo factor (habilitar con el código simulado, confirmar, ver el
+  estado en `/perfil` y en `/perfil/totp`, deshabilitar), y el traslado completo:
+  rechazo sin la casilla marcada, solicitud real a `test-operador-b`, espera activa
+  hasta que se confirma, y verificación de que el login después responde con el
+  mensaje de "carpeta ya trasladada". Encontró y corrigió, antes de considerarse
+  terminado, un bug real de _timing_ propio de esta tarea (el de `en_curso` descrito
+  arriba) -- no estaba en el código de la primera pasada, lo introdujo esta misma
+  pantalla.
+- `scripts/probar_portal_primer_acceso.py`: primer acceso por el portal
+  (`GET`/`POST /primer-acceso`) con el token REAL que la corrida anterior dejó en el
+  log de `app-b` (mismo patrón de extracción manual que
+  `scripts/probar_primer_acceso.py`, que prueba lo mismo contra la API JSON): abre el
+  enlace con el token en la URL (precargado en el campo), establece la contraseña,
+  confirma que reusar el mismo token ya falla con el mensaje en lenguaje claro, e
+  inicia sesión por el portal con la contraseña nueva. Encontró la misma trampa de la
+  cookie `Secure` que ya se había corregido en `app-a`, esta vez en `app-b` (ver
+  arriba) -- ningún otro bug.
+
+Como regresión sobre las rutas JSON que comparten la capa de servicios recién
+extraída, se corrieron de nuevo `scripts/probar_carpeta_completa.py`,
+`scripts/probar_envio_transferencia.py`, `scripts/probar_primer_acceso.py`,
+`scripts/probar_reconciliacion.py` y `scripts/probar_regreso_antes_de_purga.py`: los
+cinco siguen sin fallos. También se verificaron 43 combinaciones de contexto sobre las
+plantillas nuevas y modificadas con Jinja2 en aislamiento (sin Docker), para cubrir
+ramas que las pruebas de Docker no ejercitan todas (p. ej. firma inválida, traslado ya
+confirmado, traslado fallido, TOTP habilitado al cargar la pantalla).
+
+**Reconciliación de transferencias simplificada el 2026-09-23
+(`app.interoperabilidad.outbox._reconciliar_transferencias`).** La pregunta que
+responde es una sola: ¿el ciudadano sigue siendo nuestro? `204` (disponible) o `200`
+nombrando a ColCarpeta mismo → `FALLIDA`, se recupera con `registerCitizen` -- son el
+mismo desenlace, porque en ambos casos el ciudadano nunca dejó de ser nuestro (el
+segundo caso es nuevo: significa que `unregisterCitizen` del envío original no surtió
+efecto, algo que antes de esto no se distinguía de "no afiliado a nadie"). `200`
+nombrando a cualquier otro operador, sea o no el destino exacto elegido → `CONFIRMADA`,
+igual que antes. **Desaparece el tercer desenlace ambiguo** que antes dejaba la
+transferencia colgada en `ENVIADA` para siempre cuando el centralizador nombraba a un
+operador distinto del destino: la pregunta nunca fue "¿llegó a donde lo mandamos?", es
+"¿sigue siendo nuestro?", y esa pregunta el centralizador siempre la responde sin
+ambigüedad. `transferencia.reconciliacion_ambigua` deja de generarse.
+`scripts/probar_reconciliacion.py` pasó de tres escenarios a cuatro (A: confirmada por
+el destino exacto; B: disponible, recuperada; C, antes "ambigua", ahora confirmada
+igual que A porque quedó afiliado a un tercero; D, nuevo: afiliado a ColCarpeta mismo,
+recuperada igual que B) -- los cuatro probados de punta a punta contra
+`mock-centralizador` el 2026-09-23, sin fallos.
+
+**La pantalla de traslado ahora dice cuánto puede tardar y qué pasa si falla.**
+`horas_maximo` (`TRANSFER_CONFIRM_TIMEOUT / 3600`, calculado en
+`app.portal.router_traslado._contexto_estado`, nunca escrito a mano en una plantilla)
+aparece tanto en la advertencia antes de confirmar el traslado como en la pantalla de
+estado mientras está en curso, junto con "si no se completa, tu carpeta vuelve a estar
+activa en ColCarpeta sola, sin que tengas que hacer nada" -- antes la pantalla de "en
+proceso" no daba ningún horizonte de tiempo ni decía qué pasaba si fallaba.
+
+**El sondeo del contador de notificaciones subió de 30 segundos a 10 minutos
+(`NOTIFICACIONES_CONTADOR_INTERVALO_SEGUNDOS`, nueva variable de configuración, `600`
+por defecto).** Vive en `app/config.py`, no escrito en ninguna plantilla: se inyecta
+una sola vez como global de Jinja (`app.portal.router`, `templates.env.globals`) que
+`base.html` y `_notificaciones_contador.html` leen por igual, así que ajustarlo no
+exige tocar HTML. La insignia igual se repinta con datos frescos en cada cambio de
+pantalla (`hx-trigger="load, ..."`); el sondeo periódico solo cubre a alguien que se
+queda quieto en la misma pantalla mucho tiempo, donde un intervalo más largo no se
+nota.
+
+**Revisión completa de tildes en el texto visible del portal, el 2026-09-23.** Títulos
+de página, etiquetas, botones, mensajes de éxito/error y los asuntos/cuerpos de los
+correos simulados (que también quedan en la bandeja de notificaciones del ciudadano,
+CU-17) -- en las plantillas Jinja2, en los mensajes de `ErrorDeNegocio` de las capas de
+servicios que el portal comparte con la API JSON (`identidad/servicios.py`,
+`perfil_servicios.py`, `primer_acceso_servicios.py`, `documentos/servicios.py`,
+`notificaciones/servicios.py`, `traslado_servicios.py`), y en
+`identidad/seguridad.py` (el mensaje de formato de contraseña, mostrado en el portal
+vía la validación de Pydantic). **Deliberadamente fuera de esta revisión:**
+`app/documentos/entidades.py` (API de entidades emisoras, nunca renderizada por el
+portal) y cualquier identificador de código (nombres de variable, campos, rutas) --
+solo texto que un ciudadano llega a leer. Como varios de esos mensajes de
+`ErrorDeNegocio` también los devuelve la API JSON tal cual, sus respuestas de error
+ahora también salen con tildes correctas; no cambió ningún código ni estructura, solo
+el texto de `mensaje`. Todos los scripts de prueba que comparaban texto exacto contra
+esos mensajes (`probar_portal.py`, `probar_portal_segunda_pasada.py`,
+`probar_portal_primer_acceso.py`) se actualizaron para seguir pasando -- sin eso,
+habrían quedado rotos por el cambio de texto, no por una regresión real.
+
+Las cuatro correcciones de esta tarea se probaron de punta a punta en Docker: los
+cuatro escenarios de reconciliación (arriba), y las tres pruebas del portal
+(`probar_portal.py`, `probar_portal_segunda_pasada.py` con el traslado real hasta
+`CONFIRMADA` mostrando el nuevo texto de horas/recuperación automática,
+`probar_portal_primer_acceso.py` con un token real) junto con la regresión JSON
+completa (`probar_carpeta_completa.py`, `probar_envio_transferencia.py`,
+`probar_primer_acceso.py`, `probar_regreso_antes_de_purga.py`) -- todas sin fallos tras
+los ajustes. Al confirmar el traslado real en Docker se verificó directamente en los
+logs de `app-b` que el correo simulado de primer acceso también sale con tildes
+("Tu carpeta se trasladó a ColCarpeta...").
 
 ### Pendiente
 
@@ -665,12 +848,6 @@ a la base.
 Notificaciones más allá del correo de registro, primer acceso, reenvío y depósito de un
 documento por una entidad (ver arriba), consola de administración, y CU-06 sin
 `descarga` masiva ni paquetes (RF27).
-
-**Portal del ciudadano, segunda pasada (AD-11):** perfil (`GET`/`PATCH
-/api/v1/perfil`), centro de notificaciones (CU-17), traslado a otro operador (CU-03),
-primer acceso y su reenvío, y segundo factor (habilitar/confirmar TOTP) no tienen
-pantalla propia todavía -- solo existen por la API JSON. El formulario de carga de la
-carpeta tampoco expone `sustituye_a` (CU-10): sigue disponible por la API.
 
 No registrar `registerTransferEndPoint` todavía: ver "Prohibido".
 
@@ -702,11 +879,22 @@ app/
     dependencias.py            auth de sesión + resolver_usuario (cedula o email_carpeta)
     servicios.py               CU-01/CU-02: logica de negocio compartida entre la API JSON
                                 y el portal (AD-11) -- registro e inicio/cierre de sesion
-    primer_acceso.py           POST /api/v1/primer-acceso y /primer-acceso/reenviar
-    perfil.py                  GET/PATCH /api/v1/perfil (datos y cuota, CU-03 no incluido: ver interoperabilidad/)
+    primer_acceso.py           POST /api/v1/primer-acceso y /primer-acceso/reenviar: rutas
+                                JSON, delgadas sobre primer_acceso_servicios.py
+    primer_acceso_servicios.py logica compartida con el portal, incluido el modelo
+                                SolicitudPrimerAcceso (con el validador de formato de
+                                password) y el mensaje fijo de reenvio
+    perfil.py                  GET/PATCH /api/v1/perfil: rutas JSON, delgadas sobre
+                                perfil_servicios.py (CU-03 no incluido: ver interoperabilidad/)
+    perfil_totp.py              POST/POST confirmar/DELETE segundo factor: rutas JSON,
+                                delgadas sobre perfil_servicios.py
+    perfil_servicios.py        logica compartida con el portal: datos+cuota del ciudadano
+                                y enrolamiento/confirmacion/baja del TOTP
   notificaciones/
     correo.py                  envío de correo simulado (sin proveedor real integrado) + registro en `notificacion`
-    router.py                  GET /api/v1/notificaciones y POST .../leida (CU-17)
+    router.py                  GET /api/v1/notificaciones y POST .../leida: rutas JSON,
+                                delgadas sobre servicios.py
+    servicios.py               logica compartida con la bandeja del portal (CU-17)
   documentos/
     router.py                  CU-05/06/07/08/10: rutas JSON, delgadas sobre servicios.py
     servicios.py               logica de negocio compartida entre la API JSON y el portal
@@ -723,14 +911,29 @@ app/
     outbox.py                  bandeja de salida + mantenimiento periódico (directorio,
                                 reconciliación, purga de transferencias y de documentos) +
                                 emisión del token de primer acceso
-    transferencias.py          router (/api, CU-16) + router_propio (/api/v1/perfil/traslado, CU-03)
+    transferencias.py          router (/api, CU-16, formato del ecosistema, sin tocar) +
+                                router_propio (/api/v1/perfil/traslado, CU-03: rutas JSON,
+                                delgadas sobre traslado_servicios.py)
+    traslado_servicios.py      logica de CU-03 compartida con el portal: solicitar_traslado,
+                                listar_operadores_transferibles, estado_traslado
   mock/registraduria.py        Registraduría simulada
-  portal/                      AD-11: pantallas HTML del ciudadano (Jinja2 + HTMX),
-                                primera pasada -- no aparece en el esquema OpenAPI
+  portal/                      AD-11: todas las pantallas del ciudadano (Jinja2 + HTMX),
+                                en la raiz del dominio -- no aparece en el esquema OpenAPI
     auth.py                    cookie de sesion del portal (HttpOnly + SameSite + Secure)
-    router.py                  rutas HTML: sesion, registro, carpeta, detalle de documento
-    templates/                 base.html, sesion.html, registro.html, carpeta.html,
-                                documento.html, _macros.html (etiquetas de procedencia/firma)
+    router.py                  sesion, registro, carpeta, documento (detalle, descarga,
+                                eliminar, autenticacion, sustituir CU-10, estado en vivo) +
+                                router_legado (redirecciones permanentes desde /portal/...)
+    router_notificaciones.py   bandeja de CU-17 + el contador de la navegacion
+    router_perfil.py           perfil (datos y cuota) + segundo factor (TOTP)
+    router_traslado.py         CU-03: elegir operador, confirmar, estado en vivo
+    router_primer_acceso.py    primer acceso por token, y su reenvio
+    templates/                 base.html (nav comun a toda pantalla autenticada),
+                                sesion.html, registro.html, carpeta.html, documento.html,
+                                sustituir.html, notificaciones.html, perfil.html, totp.html,
+                                traslado.html, primer_acceso.html,
+                                primer_acceso_reenviar.html, _macros.html (etiquetas de
+                                procedencia/firma), _documento_estado.html y
+                                _traslado_estado.html (fragmentos sondeados por HTMX)
     static/                    htmx.min.js (vendorizado) y estilos.css (mobile-first)
 alembic/versions/              migraciones
 docs/especificacion.md         la especificación completa
@@ -747,7 +950,9 @@ scripts/probar_colision_email.py  _recibir_transferencia en aislamiento: colisio
 scripts/alta_entidad_emisora.py  alta, rotacion, revocacion y reactivacion de una entidad emisora (CU-13); no es una ruta publica
 scripts/probar_firma_digital.py  CU-09: genera con pyHanko un PDF firmado/alterado/sin firma y valida los tres
 scripts/probar_firma_transferencia.py  CU-09 en CU-16: documento certificado por el origen que llega firmado y alterado
-scripts/probar_portal.py  portal (AD-11) de punta a punta por las pantallas HTML: registro, login, subir, listar, ver, descargar, eliminar, salir
+scripts/probar_portal.py  portal (AD-11), primera pasada, por las pantallas HTML: registro, login, subir, listar, ver, descargar, eliminar, salir
+scripts/probar_portal_segunda_pasada.py  portal (AD-11), segunda pasada: notificaciones, perfil, segundo factor, sustituir (CU-10) y traslado (CU-03) por las pantallas HTML
+scripts/probar_portal_primer_acceso.py  primer acceso por el portal con un token REAL de una transferencia (usar despues de probar_portal_segunda_pasada.py)
 scripts/mock_centralizador.py  centralizador falso en memoria, solo para esas pruebas
 Dockerfile                     imagen de la app; la usa Railway Y docker-compose.test.yml
 docker-compose.test.yml        solo para probar en Linux en esta maquina (Docker Desktop),
@@ -912,7 +1117,11 @@ docker compose -f docker-compose.test.yml run --rm prueba-reenvio-primer-acceso 
 docker compose -f docker-compose.test.yml run --rm prueba-carpeta-completa   # CU-07/08/10/11/13/17 + perfil
 docker compose -f docker-compose.test.yml run --rm prueba-firma-digital   # CU-09: firmado/alterado/sin firma
 docker compose -f docker-compose.test.yml run --rm prueba-firma-transferencia   # CU-09 en CU-16
-docker compose -f docker-compose.test.yml run --rm prueba-portal   # portal (AD-11) por las pantallas HTML
+docker compose -f docker-compose.test.yml run --rm prueba-portal   # portal (AD-11), primera pasada
+docker compose -f docker-compose.test.yml run --rm prueba-portal-segunda-pasada   # notificaciones, perfil, TOTP, sustituir, traslado
+docker compose -f docker-compose.test.yml logs app-b | grep -A5 "correo simulado"   # token de primer acceso (tras el traslado de arriba)
+docker compose -f docker-compose.test.yml run --rm prueba-portal-primer-acceso \
+  --base-url=http://app-b:8000 --token=<el-extraido-arriba> --usuario=<cedula>
 docker compose -f docker-compose.test.yml down -v             # -v: tambien borra postgres-a/b
 ```
 
@@ -924,12 +1133,16 @@ la transferencia quedó `CONFIRMADA`, el ciudadano llegó `ACTIVO` a `app-b` con
 documento, y `app-a` quedó `TRASLADADO`. Probado de punta a punta el 2026-09-22, varias
 veces, de forma reproducible.
 
-`scripts/probar_reconciliacion.py` inserta una `transferencia` `ENVIADA` con
+`scripts/probar_reconciliacion.py` inserta cuatro filas `transferencia` `ENVIADA` con
 `enviada_en` retrocedido en la base (no espera `TRANSFER_CONFIRM_TIMEOUT` de verdad) y
-corre `_reconciliar_transferencias` una sola vez, cubriendo sus tres desenlaces
-(confirmada, recuperada, ambigua). No depende de `app-a`/`app-b` como servidores vivos
--- solo de `postgres-a` y `mock-centralizador` -- para no competir con su propio outbox
-por las mismas filas.
+corre `_reconciliar_transferencias` una sola vez, cubriendo (desde el 2026-09-23, tras
+la simplificación de la reconciliación) sus dos desenlaces posibles -- ya no hay un
+tercero ambiguo -- en sus cuatro variantes de entrada: A confirmada por el destino
+exacto, B disponible y recuperada, C confirmada igual que A pero afiliada a un tercero
+distinto del destino elegido, D recuperada igual que B pero afiliada a ColCarpeta mismo
+(como si `unregisterCitizen` no hubiera surtido efecto en el envío original). No
+depende de `app-a`/`app-b` como servidores vivos -- solo de `postgres-a` y
+`mock-centralizador` -- para no competir con su propio outbox por las mismas filas.
 
 `scripts/probar_regreso_antes_de_purga.py` siembra directamente un ciudadano
 `TRASLADADO` (con un documento y un objeto S3 real) y le envía una transferencia
@@ -1047,6 +1260,48 @@ arriba (corregida con `PORTAL_COOKIE_SECURE=false` en el entorno de `app-a` de e
 archivo) -- ese fue el único bug real que encontró en su primera corrida; el resto de
 la prueba, incluida la extensión para el movimiento a la raíz, pasó sin ajustes
 adicionales.
+
+`scripts/probar_portal_segunda_pasada.py` cubre las seis pantallas de la segunda
+pasada, contra `app-a` viva (con `app-b` y `mock-centralizador` como destino real del
+traslado): registra por el portal con un correo personal real (para que el traslado
+más adelante traiga `contactEmail`), inicia sesión (el login no exige `ACTIVO`, solo
+credenciales válidas) y reintenta la carga de un documento hasta que el registro
+termina de confirmarse (en vez de sondear la base directamente, a diferencia de otros
+scripts de esta lista, porque este es deliberadamente HTTP-only), sustituye ese
+documento (CU-10) y confirma que el original queda consultable como reemplazado, revisa
+la bandeja de notificaciones y la marca como leída, confirma el fragmento del contador,
+consulta y actualiza el perfil, habilita el segundo factor con el código simulado y lo
+confirma, lo ve reflejado tanto en `/perfil/totp` como en la etiqueta de `/perfil`, y lo
+deshabilita, prueba que el formulario de traslado rechaza la solicitud sin la casilla
+de confirmación marcada, la envía de verdad a `test-operador-b`, espera activamente a
+que se confirme, y confirma que el login después responde con el mensaje de carpeta ya
+trasladada. Encontró dos bugs reales, ambos corregidos antes de darse por terminada la
+tarea: la trampa de la cookie `Secure` en `app-b` (ver arriba, la misma ya conocida de
+`app-a`) y el problema de `en_curso` en la pantalla de traslado (ver arriba, específico
+de esta pantalla nueva) -- este segundo lo encontró la revisión de código, no la
+ejecución de la prueba, que nunca llegó a fallar por esa ventana de tiempo tan corta.
+
+`scripts/probar_portal_primer_acceso.py` consume, por el portal
+(`GET`/`POST /primer-acceso`), el token real de primer acceso que
+`probar_portal_segunda_pasada.py` deja en el log de `app-b` al completarse el traslado
+-- mismo patrón de extracción manual que `scripts/probar_primer_acceso.py` (API JSON):
+abre el enlace con el token en la URL y confirma que llega precargado en el campo,
+establece la contraseña, confirma que reusar el mismo token ya falla con el mensaje en
+lenguaje claro ("El enlace no es válido o ya venció", sin distinguir el motivo), e
+inicia sesión por el portal con la contraseña nueva, confirmando que la cookie de
+sesión queda fija. Encontró la misma trampa de la cookie `Secure` en `app-b` la primera
+vez que corrió (antes de que `probar_portal_segunda_pasada.py` la hubiera dejado
+corregida en el archivo); en la corrida final, con la corrección ya aplicada, pasó sin
+ajustes.
+
+Como regresión sobre las rutas JSON que ahora comparten la capa de servicios recién
+extraída para la segunda pasada, se corrieron de nuevo (contra el mismo trío
+`app-a`/`app-b`/`mock-centralizador`) `scripts/probar_carpeta_completa.py`,
+`scripts/probar_envio_transferencia.py`, `scripts/probar_primer_acceso.py`,
+`scripts/probar_reconciliacion.py` y `scripts/probar_regreso_antes_de_purga.py`: los
+cinco siguen sin fallos, confirmando que extraer `perfil_servicios.py`,
+`primer_acceso_servicios.py`, `notificaciones/servicios.py` y `traslado_servicios.py`
+no cambió el comportamiento de ninguna ruta JSON existente.
 
 ## Convenciones
 

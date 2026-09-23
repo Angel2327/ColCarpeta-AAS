@@ -1,0 +1,51 @@
+{% import "_macros.html" as m %}
+<div id="documento-estado"{% if validando_firma or doc.estado_autenticacion.value == "PENDIENTE" %} hx-get="/documentos/{{ doc.id }}/estado" hx-trigger="load delay:5s" hx-swap="outerHTML"{% endif %}>
+  <div class="documento-estado__firma">
+    {% if validando_firma %}
+    <span class="etiqueta etiqueta--firma-ausente">Validando firma...</span>
+    {% else %}
+    {{ m.etiqueta_firma(doc) }}
+    {% endif %}
+  </div>
+
+  {% if doc.firma_valida is not none %}
+  <dl class="detalle">
+    <dt>Firma digital</dt>
+    <dd>
+      {% if doc.firma_valida %}
+        Se verificó que el documento no cambió desde que se firmó.
+      {% else %}
+        Se revisó la firma digital y no es válida: el documento pudo cambiar después de firmarse, o la firma está mal formada.
+      {% endif %}
+      {% if doc.firma_firmante %}<br>Firmante declarado: {{ doc.firma_firmante }}{% endif %}
+      {% if doc.firma_fecha %}<br>Fecha de la firma: {{ doc.firma_fecha.strftime("%d/%m/%Y %H:%M") }}{% endif %}
+    </dd>
+  </dl>
+  {% elif validando_firma %}
+  <p class="nota-pequena">Puedes seguir usando tu carpeta mientras tanto; esta sección se actualiza sola.</p>
+  {% endif %}
+
+  <section aria-labelledby="titulo-auth">
+    <h2 id="titulo-auth">Autenticación ante GovCarpeta</h2>
+
+    {% if doc.estado_autenticacion.value == "NO_SOLICITADA" %}
+      <p>Todavía no has pedido autenticar este documento ante el sistema nacional GovCarpeta.</p>
+      {% if doc.estado.value == "ACTIVO" %}
+      <form method="post" action="/documentos/{{ doc.id }}/autenticacion">
+        <button type="submit">Solicitar autenticación</button>
+      </form>
+      {% endif %}
+    {% elif doc.estado_autenticacion.value == "PENDIENTE" %}
+      <p class="aviso aviso--atencion" role="status">Tu solicitud está en proceso. Esta sección se actualiza sola.</p>
+    {% elif doc.estado_autenticacion.value == "AUTENTICADO" %}
+      <p class="aviso aviso--exito" role="status">Este documento quedó autenticado ante GovCarpeta.</p>
+    {% elif doc.estado_autenticacion.value == "RECHAZADO" %}
+      <p class="aviso aviso--error" role="status">GovCarpeta rechazó la autenticación de este documento.</p>
+      {% if doc.estado.value == "ACTIVO" %}
+      <form method="post" action="/documentos/{{ doc.id }}/autenticacion">
+        <button type="submit">Intentar de nuevo</button>
+      </form>
+      {% endif %}
+    {% endif %}
+  </section>
+</div>

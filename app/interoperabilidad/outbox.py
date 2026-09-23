@@ -631,11 +631,11 @@ async def _activar_ciudadano(
                 session,
                 ciudadano_id=ciudadano.id,
                 destinatario=ciudadano.email_personal,
-                asunto="Tu carpeta en ColCarpeta esta activa",
+                asunto="Tu carpeta en ColCarpeta está activa",
                 cuerpo=(
                     f"Hola {ciudadano.nombre},\n\n"
-                    "Tu registro en ColCarpeta se completo. Tu direccion de carpeta es "
-                    f"{ciudadano.email_carpeta}; usala (o tu cedula) para iniciar sesion.\n"
+                    "Tu registro en ColCarpeta se completó. Tu dirección de carpeta es "
+                    f"{ciudadano.email_carpeta}; úsala (o tu cédula) para iniciar sesión.\n"
                 ),
             )
             session.add(
@@ -813,11 +813,11 @@ async def _emitir_token_primer_acceso(session: AsyncSession, ciudadano: Ciudadan
         session,
         ciudadano_id=ciudadano.id,
         destinatario=ciudadano.email_personal,
-        asunto="Establece la contrasena de tu carpeta en ColCarpeta",
+        asunto="Establece la contraseña de tu carpeta en ColCarpeta",
         cuerpo=(
             f"Hola {ciudadano.nombre},\n\n"
-            "Tu carpeta se traslado a ColCarpeta. Para poder iniciar sesion, establece tu "
-            f"contrasena con este codigo de un solo uso (valido por {cfg.primer_acceso_token_ttl_horas} horas):\n\n"
+            "Tu carpeta se trasladó a ColCarpeta. Para poder iniciar sesión, establece tu "
+            f"contraseña con este código de un solo uso (válido por {cfg.primer_acceso_token_ttl_horas} horas):\n\n"
             f"{token}\n"
         ),
     )
@@ -1191,33 +1191,44 @@ async def _reconciliar_transferencias(gov: GovCarpeta, session_factory: async_se
     llegue `confirmAPI` para una transferencia `ENVIADA`, se consulta `validateCitizen`
     en vez de dejarla colgada para siempre.
 
-    - `200` y el texto nombra al operador destino -> se cierra como si hubiera llegado
-      `req_status = 1`: `CONFIRMADA` y purga programada.
-    - `204` (disponible: nadie la afilio) -> se cierra como `req_status = 0`: se
-      recupera con `registerCitizen`.
-    - `200` pero el texto NO nombra al destino (afiliado a un tercero, dato ambiguo) --
-      no lo cubre la especificacion de forma explicita. No se resuelve sola: queda
-      auditada y se reintenta en la proxima pasada, para no arriesgar una decision
-      equivocada (dejar a alguien afiliado en dos operadores, o recuperar a un
-      ciudadano que en realidad si se traslado).
+    La pregunta que responde es una sola: ¿el ciudadano sigue siendo nuestro?
+
+    - `204` (disponible: nadie lo afilio) -> ya no es de nadie: `FALLIDA`, se recupera
+      con `registerCitizen` (mismo desenlace que `req_status = 0`).
+    - `200` y el mensaje nos nombra a nosotros mismos (`OPERATOR_NAME`) -> el
+      `unregisterCitizen` del envio original no surtio efecto: sigue siendo tan nuestro
+      como si nunca se hubiera afiliado a nadie. Mismo desenlace que el caso anterior:
+      `FALLIDA`, se recupera. Antes de esto, este caso caia en el mismo bucket que
+      "afiliado a un tercero" y se quedaba colgado sin resolverse nunca.
+    - `200` y el mensaje nombra a cualquier otro operador, sea o no el destino que
+      elegimos -> ya no es nuestro: `CONFIRMADA` y purga programada, igual que
+      `req_status = 1`. No hace falta que el nombre coincida con el destino exacto: la
+      pregunta no es "¿llego a donde lo mandamos?", es "¿sigue siendo nuestro?", y si
+      el centralizador dice que no, no lo es, sin importar en que operador haya
+      quedado.
+
+    Ya no queda un tercer desenlace ambiguo: los dos casos de arriba cubren cualquier
+    respuesta de `validateCitizen`, así que ninguna transferencia vencida se queda sin
+    resolver en esta pasada (salvo que el centralizador mismo no responda, ver abajo).
     """
     from app.config import get_config
     from app.db import SessionLocal
 
     cfg = get_config()
     limite = datetime.now(timezone.utc) - timedelta(seconds=cfg.transfer_confirm_timeout)
+    nombre_propio = cfg.operator_name.strip().lower()
     resueltas = 0
 
     async with session_factory() as session:
         vencidas = (
             await session.execute(
-                select(Transferencia.id, Transferencia.ciudadano_id, Transferencia.operador_destino_id).where(
+                select(Transferencia.id, Transferencia.ciudadano_id).where(
                     Transferencia.estado == EstadoTransferencia.ENVIADA, Transferencia.enviada_en < limite
                 )
             )
         ).all()
 
-    for transferencia_id, cedula, operador_destino_id in vencidas:
+    for transferencia_id, cedula in vencidas:
         try:
             resultado = await gov.validar_ciudadano(cedula)
         except CentralizadorNoDisponible as exc:
@@ -1230,18 +1241,10 @@ async def _reconciliar_transferencias(gov: GovCarpeta, session_factory: async_se
                 continue  # se resolvio por otra via (confirmAPI) mientras se consultaba
 
             ciudadano = await session.get(Ciudadano, cedula)
-            operador = await session.get(OperadorCache, operador_destino_id)
-            nombre_destino = (operador.nombre.strip().lower() if operador and operador.nombre else "")
             mensaje = (resultado.mensaje or "").lower()
+            sigue_siendo_nuestro = resultado.disponible or (nombre_propio and nombre_propio in mensaje)
 
-            if not resultado.disponible and nombre_destino and nombre_destino in mensaje:
-                transferencia.estado = EstadoTransferencia.CONFIRMADA
-                transferencia.confirmada_en = datetime.now(timezone.utc)
-                transferencia.purgar_despues_de = datetime.now(timezone.utc) + timedelta(days=cfg.purge_delay_days)
-                if ciudadano is not None and ciudadano.estado == EstadoCiudadano.EN_TRANSFERENCIA:
-                    ciudadano.estado = EstadoCiudadano.TRASLADADO
-                accion = "transferencia.reconciliada_confirmada"
-            elif resultado.disponible:
+            if sigue_siendo_nuestro:
                 transferencia.estado = EstadoTransferencia.FALLIDA
                 if ciudadano is not None and ciudadano.estado == EstadoCiudadano.EN_TRANSFERENCIA:
                     ciudadano.estado = EstadoCiudadano.PENDIENTE_CENTRALIZADOR
@@ -1259,25 +1262,12 @@ async def _reconciliar_transferencias(gov: GovCarpeta, session_factory: async_se
                     )
                 accion = "transferencia.reconciliada_recuperada"
             else:
-                logger.warning(
-                    "reconciliacion de transferencia %s: validateCitizen no nombra al destino %s: %s",
-                    transferencia_id, operador_destino_id, resultado.mensaje,
-                )
-                session.add(
-                    Auditoria(
-                        actor="sistema",
-                        accion="transferencia.reconciliacion_ambigua",
-                        recurso=str(cedula),
-                        ciudadano_id=cedula,
-                        correlation_id=None,
-                        detalle={
-                            "transferencia_id": transferencia_id,
-                            "operador_destino_id": operador_destino_id,
-                            "mensaje_centralizador": resultado.mensaje,
-                        },
-                    )
-                )
-                continue
+                transferencia.estado = EstadoTransferencia.CONFIRMADA
+                transferencia.confirmada_en = datetime.now(timezone.utc)
+                transferencia.purgar_despues_de = datetime.now(timezone.utc) + timedelta(days=cfg.purge_delay_days)
+                if ciudadano is not None and ciudadano.estado == EstadoCiudadano.EN_TRANSFERENCIA:
+                    ciudadano.estado = EstadoCiudadano.TRASLADADO
+                accion = "transferencia.reconciliada_confirmada"
 
             session.add(
                 Auditoria(

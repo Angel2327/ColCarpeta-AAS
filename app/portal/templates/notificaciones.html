@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block titulo %}Notificaciones{% endblock %}
+{% block contenido %}
+<h1>Notificaciones{% if no_leidas %} <span class="etiqueta etiqueta--atencion">{{ no_leidas }} sin leer</span>{% endif %}</h1>
+
+{% if error %}
+<p class="aviso aviso--error" role="alert">{{ error }}</p>
+{% endif %}
+
+<p>
+  {% if solo_no_leidas %}
+  <a href="/notificaciones">Ver todas</a>
+  {% else %}
+  <a href="/notificaciones?solo_no_leidas=1">Ver solo no leídas</a>
+  {% endif %}
+</p>
+
+{% if items %}
+<ul class="lista-documentos">
+  {% for n in items %}
+    {% include "_notificacion_fila.html" %}
+  {% endfor %}
+</ul>
+{% else %}
+<p class="vacio">{{ "No tienes notificaciones sin leer." if solo_no_leidas else "Todavía no tienes notificaciones." }}</p>
+{% endif %}
+{% endblock %}

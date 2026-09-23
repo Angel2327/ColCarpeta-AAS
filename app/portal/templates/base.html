@@ -14,10 +14,13 @@
     <div class="contenedor encabezado__barra">
       <a class="encabezado__marca" href="{{ '/carpeta' if ciudadano else '/sesion' }}">ColCarpeta</a>
       {% if ciudadano %}
-      <nav class="encabezado__nav" aria-label="Navegacion principal">
+      <nav class="encabezado__nav" aria-label="Navegación principal">
         <a href="/carpeta">Mi carpeta</a>
+        <a href="/perfil">Perfil</a>
+        <a href="/notificaciones" id="notificaciones-contador" hx-get="/notificaciones/contador" hx-trigger="load, every {{ notificaciones_contador_intervalo_segundos }}s" hx-swap="outerHTML">Notificaciones</a>
+
         <form method="post" action="/salir" class="encabezado__salir">
-          <button type="submit" class="boton-enlace">Cerrar sesion</button>
+          <button type="submit" class="boton-enlace">Cerrar sesión</button>
         </form>
       </nav>
       {% endif %}

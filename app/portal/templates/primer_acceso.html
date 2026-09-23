@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block titulo %}Establecer contraseña{% endblock %}
+{% block contenido %}
+<h1>Establece tu contraseña</h1>
+<p>Si tu carpeta llegó a ColCarpeta por una transferencia desde otro operador, usa el enlace que recibiste en tu correo personal para establecer tu contraseña.</p>
+
+<div class="tarjeta">
+  {% if error %}
+  <p class="aviso aviso--error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="/primer-acceso" novalidate>
+    <div class="campo">
+      <label for="token">Código del enlace</label>
+      <input type="text" id="token" name="token" value="{{ token or '' }}" required {{ 'autofocus' if not token else '' }}>
+      <span class="ayuda">El código que viene después de "token=" en el enlace que recibiste.</span>
+    </div>
+    <div class="campo">
+      <label for="password">Contraseña nueva</label>
+      <input type="password" id="password" name="password" required autocomplete="new-password" {{ 'autofocus' if token else '' }}>
+      <span class="ayuda">Mínimo 10 caracteres, con al menos una letra y un número.</span>
+    </div>
+    <button type="submit">Establecer contraseña</button>
+  </form>
+</div>
+
+<p>¿Tu enlace venció? <a href="/primer-acceso/reenviar">Pide uno nuevo</a>.</p>
+<p>¿Ya tienes contraseña? <a href="/sesion">Inicia sesión</a>.</p>
+{% endblock %}

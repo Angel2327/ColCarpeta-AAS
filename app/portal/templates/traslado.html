@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block titulo %}Trasladar mi carpeta{% endblock %}
+{% block contenido %}
+<p><a href="/perfil">« Volver a mi perfil</a></p>
+<h1>Trasladar mi carpeta a otro operador</h1>
+
+{% if error %}
+<p class="aviso aviso--error" role="alert">{{ error }}</p>
+{% endif %}
+
+{% if en_curso or estado_ciudadano.value == "TRASLADADO" %}
+  {% include "_traslado_estado.html" %}
+{% elif estado_ciudadano.value != "ACTIVO" %}
+<p class="aviso aviso--atencion" role="status">Tu carpeta no está activa en este momento: no puedes solicitar un traslado.</p>
+{% else %}
+<div class="tarjeta">
+  <p class="aviso aviso--atencion" role="alert">
+    <strong>Esta es la acción más grave que puedes tomar en tu carpeta.</strong>
+    Trasladar tu carpeta entrega todos tus documentos y tus datos al operador que elijas,
+    y los elimina de ColCarpeta. No se puede deshacer.
+  </p>
+  <p class="nota-pequena">Puede tardar hasta {{ horas_maximo }} horas si el operador destino no responde. Si el traslado no se completa, tu carpeta vuelve a estar activa en ColCarpeta sola, sin que tengas que hacer nada.</p>
+
+  {% if transferencia and transferencia.estado.value == "FALLIDA" %}
+  <p class="nota-pequena">Tu último intento de traslado (a {{ nombre_operador }}) no se completó y tu carpeta se recuperó en ColCarpeta.</p>
+  {% endif %}
+
+  {% if operadores %}
+  <form method="post" action="/perfil/traslado" novalidate>
+    <div class="campo">
+      <label for="operador_destino_id">Operador destino</label>
+      <select id="operador_destino_id" name="operador_destino_id" required>
+        <option value="" disabled selected>Selecciona un operador</option>
+        {% for op in operadores %}
+        <option value="{{ op.id }}">{{ op.nombre }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="campo campo--casilla">
+      <label>
+        <input type="checkbox" name="confirmar" required>
+        Entiendo que esto entrega mi carpeta completa a otro operador de forma permanente y que no se puede deshacer.
+      </label>
+    </div>
+    <button type="submit" class="boton boton--peligro">Sí, trasladar mi carpeta de forma permanente</button>
+  </form>
+  {% else %}
+  <p class="vacio">No hay operadores disponibles en el directorio con un endpoint de transferencia publicado en este momento.</p>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

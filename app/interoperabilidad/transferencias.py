@@ -31,7 +31,7 @@ import socket
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -40,6 +40,7 @@ from app.config import get_config
 from app.db import SessionLocal
 from app.errors import ErrorDeNegocio
 from app.identidad.dependencias import ciudadano_actual
+from app.interoperabilidad import traslado_servicios
 from app.models import (
     Auditoria,
     Ciudadano,
@@ -432,7 +433,6 @@ class RespuestaTraslado(BaseModel):
 @router_propio.post("/traslado", response_model=RespuestaTraslado, status_code=202)
 async def solicitar_traslado(
     solicitud: SolicitudTraslado,
-    response: Response,
     request: Request,
     actual: Ciudadano = Depends(ciudadano_actual),
 ) -> RespuestaTraslado:
@@ -448,62 +448,7 @@ async def solicitar_traslado(
     para este ciudadano, o 404 si el operador destino no existe en el directorio o no
     publica un endpoint de transferencia utilizable.
     """
-    async with SessionLocal() as session:
-        ciudadano = await session.get(Ciudadano, actual.id)
-        assert ciudadano is not None
-
-        if ciudadano.estado != EstadoCiudadano.ACTIVO:
-            raise ErrorDeNegocio("ESTADO_INVALIDO", "Tu carpeta no esta activa.")
-
-        # "Solo una transferencia puede estar en estado ENVIADA por ciudadano" (Modelo
-        # de datos, relacion ciudadano-transferencia).
-        ya_en_curso = (
-            await session.execute(
-                select(Transferencia.id).where(
-                    Transferencia.ciudadano_id == actual.id, Transferencia.estado == EstadoTransferencia.ENVIADA
-                )
-            )
-        ).first()
-        if ya_en_curso is not None:
-            raise ErrorDeNegocio("TRASLADO_EN_CURSO", "Ya hay un traslado en curso para tu cedula.")
-
-        # Se resuelve solo contra lo que ya haya en operador_cache en este momento:
-        # llamar a getOperators desde la ruta violaria "el centralizador no va en la
-        # ruta critica". El refresco "a demanda antes de cada envio" de verdad ocurre
-        # dentro del propio manejador de outbox (enviarTransferencia), justo antes de
-        # enviar -- si el cache esta desactualizado, ese refresco posterior lo corrige.
-        operador = await session.get(OperadorCache, solicitud.operador_destino_id)
-        url_valida = operador is not None and operador.transfer_api_url and (
-            operador.transfer_api_url.startswith("https://") or not get_config().transferencia_exigir_https
-        )
-        if not url_valida:
-            raise ErrorDeNegocio(
-                "OPERADOR_NO_DISPONIBLE",
-                "El operador destino no esta en el directorio o no publica un endpoint de transferencia seguro.",
-            )
-
-        ciudadano.estado = EstadoCiudadano.EN_TRANSFERENCIA
-        session.add(
-            Outbox(
-                operacion="enviarTransferencia",
-                payload={
-                    "cedula": actual.id,
-                    "operador_destino_id": solicitud.operador_destino_id,
-                    "correlation_id": _correlation_id(request),
-                },
-            )
-        )
-        session.add(
-            Auditoria(
-                actor=str(actual.id),
-                accion="transferencia.solicitada",
-                recurso=str(actual.id),
-                ciudadano_id=actual.id,
-                correlation_id=_correlation_id(request),
-                detalle={"operador_destino_id": solicitud.operador_destino_id},
-            )
-        )
-        await session.commit()
-
-        response.status_code = 202
-        return RespuestaTraslado(estado=ciudadano.estado)
+    estado = await traslado_servicios.solicitar_traslado(
+        ciudadano_id=actual.id, operador_destino_id=solicitud.operador_destino_id, correlation_id=_correlation_id(request)
+    )
+    return RespuestaTraslado(estado=estado)

@@ -20,7 +20,7 @@ _PATRON_PASSWORD = re.compile(r"^(?=.*[A-Za-z])(?=.*\d).{10,}$")
 
 def validar_formato_password(valor: str) -> str:
     if not _PATRON_PASSWORD.match(valor):
-        raise ValueError("la contrasena debe tener minimo 10 caracteres, con al menos una letra y un digito")
+        raise ValueError("la contraseña debe tener mínimo 10 caracteres, con al menos una letra y un dígito")
     return valor
 
 

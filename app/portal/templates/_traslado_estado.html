@@ -1,0 +1,14 @@
+<div id="traslado-estado" class="tarjeta"{% if en_curso %} hx-get="/perfil/traslado/estado" hx-trigger="load delay:5s" hx-swap="outerHTML"{% endif %}>
+  {% if en_curso and nombre_operador %}
+  <p class="aviso aviso--atencion" role="status">Tu traslado a {{ nombre_operador }} se envió y está esperando confirmación del operador destino. Puede tardar hasta {{ horas_maximo }} horas si el operador destino no responde. Si no se completa, tu carpeta vuelve a estar activa en ColCarpeta sola, sin que tengas que hacer nada. Esta página se actualiza sola; no hace falta recargar.</p>
+  {% elif en_curso %}
+  <p class="aviso aviso--atencion" role="status">Tu solicitud de traslado está en proceso. Puede tardar hasta {{ horas_maximo }} horas si el operador destino no responde. Si no se completa, tu carpeta vuelve a estar activa en ColCarpeta sola, sin que tengas que hacer nada. Esta página se actualiza sola; no hace falta recargar.</p>
+  {% elif estado_ciudadano.value == "TRASLADADO" %}
+  <p class="aviso aviso--exito" role="status">Tu carpeta fue trasladada a {{ nombre_operador }}. Ya no puedes iniciar sesión en ColCarpeta con esta cuenta.</p>
+  {% elif transferencia and transferencia.estado.value == "FALLIDA" %}
+  <p class="aviso aviso--error" role="status">El traslado a {{ nombre_operador }} no se pudo completar. Tu carpeta se recuperó en ColCarpeta.</p>
+  <p><a href="/perfil/traslado">Volver a intentar</a></p>
+  {% else %}
+  <p>No tienes ningún traslado en curso.</p>
+  {% endif %}
+</div>

@@ -1,0 +1,16 @@
+<li class="notificacion-fila{{ ' notificacion-fila--no-leida' if not n.leida_en else '' }}" id="notificacion-{{ n.id }}">
+  <div class="notificacion-fila__cabecera">
+    <span class="notificacion-fila__asunto">{{ n.asunto }}</span>
+    {% if not n.leida_en %}<span class="etiqueta etiqueta--atencion">Nueva</span>{% endif %}
+  </div>
+  <p class="notificacion-fila__cuerpo">{{ n.cuerpo }}</p>
+  <div class="notificacion-fila__meta">{{ n.creado_en.strftime("%d/%m/%Y %H:%M") }}</div>
+  {% if not n.leida_en %}
+  <form method="post" action="/notificaciones/{{ n.id }}/leida"
+        hx-post="/notificaciones/{{ n.id }}/leida"
+        hx-target="#notificacion-{{ n.id }}"
+        hx-swap="outerHTML">
+    <button type="submit" class="boton-enlace">Marcar como leída</button>
+  </form>
+  {% endif %}
+</li>

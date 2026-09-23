@@ -15,6 +15,7 @@
   <div class="documento-fila__acciones">
     <a href="/documentos/{{ doc.id }}/descarga">Descargar</a>
     {% if not doc.certificado %}
+    <a href="/documentos/{{ doc.id }}/sustituir">Sustituir</a>
     <form method="post" action="/documentos/{{ doc.id }}/eliminar"
           hx-post="/documentos/{{ doc.id }}/eliminar"
           hx-target="#documento-{{ doc.id }}"

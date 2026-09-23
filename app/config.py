@@ -91,6 +91,12 @@ class Config(BaseSettings):
     # se debe apagar en produccion ni en un .env real, mismo patron que
     # transferencia_exigir_https.
     portal_cookie_secure: bool = True
+    # Cada cuanto sondea sola, sin recargar, la insignia de notificaciones de la
+    # navegacion (visible en cualquier pantalla autenticada). 10 minutos por defecto:
+    # nadie nota la diferencia frente a un intervalo mas corto, porque la insignia ya
+    # se repinta con datos frescos en cada cambio de pantalla (load); el sondeo
+    # periodico solo cubre a alguien que se queda quieto en la misma pantalla.
+    notificaciones_contador_intervalo_segundos: int = 600
 
     @field_validator("jwt_llave_privada", "jwt_llave_publica")
     @classmethod

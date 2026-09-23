@@ -203,8 +203,8 @@ async def depositar_documento(
             asunto=f"Nuevo documento certificado de {entidad.nombre}",
             cuerpo=(
                 f"Hola {ciudadano.nombre},\n\n"
-                f"{entidad.nombre} deposito el documento \"{titulo}\" en tu carpeta de ColCarpeta. "
-                "Ya esta certificado y disponible en tu carpeta.\n"
+                f"{entidad.nombre} depositó el documento \"{titulo}\" en tu carpeta de ColCarpeta. "
+                "Ya está certificado y disponible en tu carpeta.\n"
             ),
         )
 

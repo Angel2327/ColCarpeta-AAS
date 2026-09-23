@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block titulo %}Sustituir documento{% endblock %}
+{% block contenido %}
+<p><a href="/documentos/{{ doc.id }}">« Volver al documento</a></p>
+<h1>Sustituir «{{ doc.titulo }}»</h1>
+<p>El documento actual se conserva en tu historial (pasa a "reemplazado" y deja de contar contra tu cuota), pero deja de estar vigente en tu carpeta.</p>
+
+<div class="tarjeta">
+  {% if error %}
+  <p class="aviso aviso--error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="/documentos/{{ doc.id }}/sustituir" enctype="multipart/form-data" novalidate>
+    <div class="campo">
+      <label for="archivo">Archivo nuevo (PDF, JPG o PNG)</label>
+      <input type="file" id="archivo" name="archivo" accept=".pdf,.jpg,.jpeg,.png" required>
+    </div>
+    <div class="campo">
+      <label for="titulo">Título</label>
+      <input type="text" id="titulo" name="titulo" required value="{{ valores.titulo if valores else doc.titulo }}">
+    </div>
+    <div class="campo">
+      <label for="tipo">Tipo de documento</label>
+      <input type="text" id="tipo" name="tipo" required value="{{ valores.tipo if valores else doc.tipo }}">
+    </div>
+    <div class="campo">
+      <label for="entidad_emisora">Entidad emisora (opcional)</label>
+      <input type="text" id="entidad_emisora" name="entidad_emisora" value="{{ valores.entidad_emisora if valores else (doc.entidad_emisora or '') }}">
+    </div>
+    <div class="campo">
+      <label for="fecha_emision">Fecha de emisión (opcional)</label>
+      <input type="date" id="fecha_emision" name="fecha_emision" value="{{ valores.fecha_emision if valores else (doc.fecha_emision.strftime('%Y-%m-%d') if doc.fecha_emision else '') }}">
+    </div>
+    <button type="submit">Sustituir documento</button>
+    <span class="ayuda">Si el archivo nuevo trae una firma digital, la revisamos en segundo plano: puedes seguir usando tu carpeta mientras tanto.</span>
+  </form>
+</div>
+{% endblock %}

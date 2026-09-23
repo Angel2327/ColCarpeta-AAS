@@ -10,7 +10,7 @@
 
   <form method="post" action="/registro" novalidate>
     <div class="campo">
-      <label for="cedula">Cedula</label>
+      <label for="cedula">Cédula</label>
       <input type="text" id="cedula" inputmode="numeric" name="cedula" value="{{ valores.cedula if valores else '' }}" required autofocus>
     </div>
     <div class="campo">
@@ -18,26 +18,26 @@
       <input type="text" id="nombre" name="nombre" value="{{ valores.nombre if valores else '' }}" required>
     </div>
     <div class="campo">
-      <label for="direccion">Direccion</label>
+      <label for="direccion">Dirección</label>
       <input type="text" id="direccion" name="direccion" value="{{ valores.direccion if valores else '' }}" required>
     </div>
     <div class="campo">
-      <label for="telefono">Telefono</label>
+      <label for="telefono">Teléfono</label>
       <input type="tel" id="telefono" name="telefono" value="{{ valores.telefono if valores else '' }}" required>
     </div>
     <div class="campo">
       <label for="email_personal">Correo personal</label>
       <input type="email" id="email_personal" name="email_personal" value="{{ valores.email_personal if valores else '' }}" required autocomplete="email">
-      <span class="ayuda">Aqui te avisamos de novedades en tu carpeta. No es tu direccion de carpeta: esa se genera sola.</span>
+      <span class="ayuda">Aquí te avisamos de novedades en tu carpeta. No es tu dirección de carpeta: esa se genera sola.</span>
     </div>
     <div class="campo">
-      <label for="password">Contrasena</label>
+      <label for="password">Contraseña</label>
       <input type="password" id="password" name="password" required autocomplete="new-password">
-      <span class="ayuda">Minimo 10 caracteres, con al menos una letra y un numero.</span>
+      <span class="ayuda">Mínimo 10 caracteres, con al menos una letra y un número.</span>
     </div>
     <button type="submit">Crear mi carpeta</button>
   </form>
 </div>
 
-<p>¿Ya tienes una carpeta? <a href="/sesion">Inicia sesion</a>.</p>
+<p>¿Ya tienes una carpeta? <a href="/sesion">Inicia sesión</a>.</p>
 {% endblock %}

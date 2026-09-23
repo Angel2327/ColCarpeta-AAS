@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block titulo %}Segundo factor{% endblock %}
+{% block contenido %}
+<p><a href="/perfil">« Volver a mi perfil</a></p>
+<h1>Segundo factor de autenticación</h1>
+
+{% if error %}
+<p class="aviso aviso--error" role="alert">{{ error }}</p>
+{% endif %}
+
+{% if ciudadano.totp_estado and ciudadano.totp_estado.value == "HABILITADO" %}
+<div class="tarjeta">
+  <p class="aviso aviso--exito" role="status">El segundo factor está habilitado en tu carpeta.</p>
+  <h2>Deshabilitar segundo factor</h2>
+  <p>Para deshabilitarlo, confirma tu contraseña y un código vigente de tu aplicación autenticadora.</p>
+  <form method="post" action="/perfil/totp/deshabilitar" novalidate>
+    <div class="campo">
+      <label for="password">Contraseña</label>
+      <input type="password" id="password" name="password" required autocomplete="current-password">
+    </div>
+    <div class="campo">
+      <label for="codigo">Código del segundo factor</label>
+      <input type="text" id="codigo" name="codigo" inputmode="numeric" autocomplete="one-time-code" required>
+    </div>
+    <button type="submit" class="boton boton--peligro">Deshabilitar segundo factor</button>
+  </form>
+</div>
+{% elif pendiente %}
+<div class="tarjeta">
+  <p class="aviso aviso--atencion" role="status">Tienes un enrolamiento pendiente de confirmar.</p>
+  <p>Registra este secreto en tu aplicación autenticadora (Google Authenticator, Authy o similar):</p>
+  <p><code class="valor-destacado">{{ pendiente[0] }}</code></p>
+  <p class="nota-pequena">Si tu aplicación admite un enlace en vez de escribir el secreto a mano: <code>{{ pendiente[1] }}</code></p>
+  <form method="post" action="/perfil/totp/confirmar" novalidate>
+    <div class="campo">
+      <label for="codigo">Código generado por tu aplicación</label>
+      <input type="text" id="codigo" name="codigo" inputmode="numeric" autocomplete="one-time-code" required autofocus>
+    </div>
+    <button type="submit">Confirmar</button>
+  </form>
+  <form method="post" action="/perfil/totp/iniciar">
+    <button type="submit" class="boton-enlace">Generar un secreto nuevo (el actual dejará de servir)</button>
+  </form>
+</div>
+{% else %}
+<div class="tarjeta">
+  <p>Todavía no tienes el segundo factor habilitado. Con el segundo factor, iniciar sesión pedirá además un código de tu aplicación autenticadora.</p>
+  <form method="post" action="/perfil/totp/iniciar">
+    <button type="submit">Habilitar segundo factor</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

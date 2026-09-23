@@ -29,6 +29,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
+from app.config import get_config
 from app.documentos import servicios as documentos_servicios
 from app.errors import ErrorDeNegocio
 from app.identidad.servicios import RespuestaSesion, SolicitudRegistro, SolicitudSesion, cerrar_sesion, iniciar_sesion, registrar_ciudadano
@@ -37,6 +38,11 @@ from app.portal.auth import borrar_cookie_sesion, ciudadano_actual_portal, fijar
 router = APIRouter(tags=["portal"], include_in_schema=False)
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+# Configurable sin tocar plantillas (config.py, no un numero fijo en el HTML): cada
+# cuanto sondea sola la insignia de notificaciones de la navegacion. Global de Jinja,
+# no algo que cada ruta tenga que pasar en su contexto -- base.html lo usa en toda
+# pantalla autenticada, y no cambia entre peticiones dentro del mismo proceso.
+templates.env.globals["notificaciones_contador_intervalo_segundos"] = get_config().notificaciones_contador_intervalo_segundos
 
 
 def _origen(request: Request) -> str:
@@ -124,7 +130,9 @@ async def form_sesion(request: Request) -> HTMLResponse:
         return RedirectResponse("/carpeta", status_code=303)
     contexto = {"ciudadano": None}
     if request.query_params.get("registrado"):
-        contexto["mensaje_exito"] = "Tu carpeta se creo correctamente. Ya puedes iniciar sesion."
+        contexto["mensaje_exito"] = "Tu carpeta se creó correctamente. Ya puedes iniciar sesión."
+    elif request.query_params.get("primeracceso"):
+        contexto["mensaje_exito"] = "Tu contraseña quedó establecida. Ya puedes iniciar sesión."
     return templates.TemplateResponse(request, "sesion.html", contexto)
 
 
@@ -240,9 +248,9 @@ async def carpeta(request: Request) -> HTMLResponse:
         "url_pagina": _url_pagina_factory(filtros, size),
     }
     if request.query_params.get("subido"):
-        contexto["mensaje_exito"] = "El documento se subio correctamente."
+        contexto["mensaje_exito"] = "El documento se subió correctamente."
     elif request.query_params.get("eliminado"):
-        contexto["mensaje_exito"] = "El documento se elimino de tu carpeta."
+        contexto["mensaje_exito"] = "El documento se eliminó de tu carpeta."
     if request.query_params.get("error"):
         contexto["error"] = request.query_params["error"]
     return templates.TemplateResponse(request, "carpeta.html", contexto)
@@ -322,7 +330,10 @@ async def detalle_documento(request: Request, documento_id: uuid.UUID) -> HTMLRe
     except ErrorDeNegocio as exc:
         return RedirectResponse(f"/carpeta?error={exc.mensaje}", status_code=303)
 
-    return templates.TemplateResponse(request, "documento.html", {"ciudadano": ciudadano, "doc": documento})
+    validando_firma = await documentos_servicios.firma_en_validacion(documento_id=documento_id)
+    return templates.TemplateResponse(
+        request, "documento.html", {"ciudadano": ciudadano, "doc": documento, "validando_firma": validando_firma}
+    )
 
 
 @router.get("/documentos/{documento_id}/descarga")
@@ -376,6 +387,90 @@ async def solicitar_autenticacion_documento(request: Request, documento_id: uuid
         return RedirectResponse(f"/carpeta?error={exc.mensaje}", status_code=303)
 
     return RedirectResponse(f"/documentos/{documento_id}", status_code=303)
+
+
+@router.get("/documentos/{documento_id}/estado", response_class=HTMLResponse)
+async def estado_documento(request: Request, documento_id: uuid.UUID) -> HTMLResponse:
+    """Fragmento sondeado por HTMX desde el detalle del documento mientras la firma
+    todavía se está validando o la autenticación ante GovCarpeta sigue pendiente --
+    deja de traer el atributo de sondeo en cuanto ambas quedan resueltas."""
+    ciudadano = await ciudadano_actual_portal(request)
+    if ciudadano is None:
+        return HTMLResponse('<div id="documento-estado"></div>')
+
+    try:
+        documento = await documentos_servicios.obtener_documento(ciudadano_id=ciudadano.id, documento_id=documento_id)
+    except ErrorDeNegocio:
+        return HTMLResponse('<div id="documento-estado"></div>')
+
+    validando_firma = await documentos_servicios.firma_en_validacion(documento_id=documento_id)
+    return templates.TemplateResponse(request, "_documento_estado.html", {"doc": documento, "validando_firma": validando_firma})
+
+
+# --- CU-10: sustituir un documento temporal por una version nueva ------------------
+
+
+@router.get("/documentos/{documento_id}/sustituir", response_class=HTMLResponse)
+async def form_sustituir_documento(request: Request, documento_id: uuid.UUID) -> HTMLResponse:
+    ciudadano = await ciudadano_actual_portal(request)
+    if ciudadano is None:
+        return RedirectResponse("/sesion", status_code=303)
+
+    try:
+        documento = await documentos_servicios.obtener_documento(ciudadano_id=ciudadano.id, documento_id=documento_id)
+    except ErrorDeNegocio as exc:
+        return RedirectResponse(f"/carpeta?error={exc.mensaje}", status_code=303)
+
+    if documento.certificado or documento.estado.value != "ACTIVO":
+        return RedirectResponse(f"/documentos/{documento_id}?error=No se puede sustituir este documento.", status_code=303)
+
+    return templates.TemplateResponse(request, "sustituir.html", {"ciudadano": ciudadano, "doc": documento})
+
+
+@router.post("/documentos/{documento_id}/sustituir", response_class=HTMLResponse)
+async def procesar_sustituir_documento(
+    request: Request,
+    documento_id: uuid.UUID,
+    archivo: UploadFile,
+    titulo: str = Form(..., min_length=1, max_length=255),
+    tipo: str = Form(..., min_length=1, max_length=100),
+    entidad_emisora: str | None = Form(None, max_length=255),
+    fecha_emision: str | None = Form(None),
+) -> HTMLResponse:
+    ciudadano = await ciudadano_actual_portal(request)
+    if ciudadano is None:
+        return RedirectResponse("/sesion", status_code=303)
+
+    contenido = await archivo.read()
+    try:
+        nuevo, _ = await documentos_servicios.cargar_documento(
+            ciudadano_id=ciudadano.id,
+            contenido=contenido,
+            titulo=titulo,
+            tipo=tipo,
+            entidad_emisora=entidad_emisora or None,
+            fecha_emision=_parse_fecha(fecha_emision),
+            sustituye_a=documento_id,
+            correlation_id=_correlation_id(request),
+        )
+    except ErrorDeNegocio as exc:
+        try:
+            documento = await documentos_servicios.obtener_documento(ciudadano_id=ciudadano.id, documento_id=documento_id)
+        except ErrorDeNegocio:
+            return RedirectResponse(f"/carpeta?error={exc.mensaje}", status_code=303)
+        return templates.TemplateResponse(
+            request,
+            "sustituir.html",
+            {
+                "ciudadano": ciudadano,
+                "doc": documento,
+                "error": exc.mensaje,
+                "valores": {"titulo": titulo, "tipo": tipo, "entidad_emisora": entidad_emisora, "fecha_emision": fecha_emision},
+            },
+            status_code=200,
+        )
+
+    return RedirectResponse(f"/documentos/{nuevo.id}", status_code=303)
 
 
 # --- rutas viejas bajo /portal/... : redireccion permanente a la raiz ---------------
