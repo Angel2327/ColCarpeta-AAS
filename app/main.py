@@ -4,8 +4,11 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_config
 
@@ -42,6 +45,7 @@ from app.interoperabilidad.transferencias import router as transferencias_router
 from app.interoperabilidad.transferencias import router_propio as traslado_router
 from app.mock.registraduria import router as registraduria_router
 from app.notificaciones.router import router as notificaciones_router
+from app.portal.router import router as portal_router
 
 
 @asynccontextmanager
@@ -108,3 +112,7 @@ app.include_router(entidades_router)
 app.include_router(notificaciones_router)
 app.include_router(transferencias_router)
 app.include_router(traslado_router)
+app.include_router(portal_router)
+# AD-11: el portal sirve sus propios estaticos (HTMX vendorizado, hoja de estilos) desde
+# el mismo proceso -- ninguna dependencia de red en tiempo de ejecucion.
+app.mount("/portal/static", StaticFiles(directory=str(Path(__file__).parent / "portal" / "static")), name="portal-static")

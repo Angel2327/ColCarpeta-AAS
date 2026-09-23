@@ -84,6 +84,14 @@ class Config(BaseSettings):
 
     registraduria_api_key: str = "clave-interna-de-desarrollo"
 
+    # portal del ciudadano (AD-11): la sesion viaja en una cookie HttpOnly + SameSite,
+    # nunca en un token que JavaScript pueda leer. SIEMPRE True salvo en
+    # docker-compose.test.yml, donde el portal se prueba por HTTP simple dentro de una
+    # red Docker aislada (un navegador descarta una cookie "Secure" sobre HTTP) -- nunca
+    # se debe apagar en produccion ni en un .env real, mismo patron que
+    # transferencia_exigir_https.
+    portal_cookie_secure: bool = True
+
     @field_validator("jwt_llave_privada", "jwt_llave_publica")
     @classmethod
     def _normalizar_pem(cls, valor: str) -> str:

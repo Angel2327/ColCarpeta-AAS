@@ -101,6 +101,11 @@ services:
       - OPERATOR_NAME=Operador A (prueba)
       - PUBLIC_BASE_URL=http://app-a:8000
       - TRANSFERENCIA_EXIGIR_HTTPS=false
+      # AD-11: la cookie del portal es "Secure" por defecto (nunca se manda por HTTP
+      # simple); estos contenedores se hablan por HTTP dentro de la red aislada, sin
+      # TLS -- mismo motivo y mismo patron que TRANSFERENCIA_EXIGIR_HTTPS=false arriba.
+      # NUNCA se apaga en produccion ni en un .env real.
+      - PORTAL_COOKIE_SECURE=false
       - OUTBOX_INTERVALO_SEGUNDOS=3
       - DIRECTORIO_OPERADORES_REFRESCO_SEGUNDOS=5
     command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
@@ -231,6 +236,23 @@ services:
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
     entrypoint: ["python", "scripts/probar_carpeta_completa.py"]
+    command:
+      - --base-url=http://app-a:8000
+      - --database-url=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+
+  # scripts/probar_portal.py: portal del ciudadano (AD-11) de punta a punta por las
+  # pantallas HTML -- registro, login, subir, listar, ver detalle y descargar un
+  # documento, cerrar sesion -- contra la app-a viva. Necesita el .env real montado
+  # porque la carga sube de verdad al bucket S3 real (igual que prueba-carpeta-completa).
+  prueba-portal:
+    build: .
+    depends_on:
+      - app-a
+    volumes:
+      - ./.env:/app/.env:ro
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a
+    entrypoint: ["python", "scripts/probar_portal.py"]
     command:
       - --base-url=http://app-a:8000
       - --database-url=postgresql://postgres:postgres@postgres-a:5432/colcarpeta_a

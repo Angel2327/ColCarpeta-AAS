@@ -32,11 +32,13 @@ bandeja de salida, envío y recepción de transferencias) · `app/mock/registrad
 perfil) · `app/documentos/` (almacenamiento S3, detección de tipo, rutas, autenticación,
 búsqueda, eliminación y sustitución de documentos, depósito por entidad emisora,
 validación de firma digital con pyHanko) · `app/notificaciones/` (envío simulado y
-centro de notificaciones, CU-17) · `scripts/limpiar_prueba.py` ·
+centro de notificaciones, CU-17) · `app/portal/` (AD-11: pantallas HTML de iniciar
+sesión, registro y la carpeta -- primera pasada) · `scripts/limpiar_prueba.py` ·
 `scripts/probar_transferencia.py` · `scripts/probar_envio_transferencia.py` ·
 `scripts/mock_centralizador.py` · `scripts/probar_carpeta_completa.py` ·
 `scripts/alta_entidad_emisora.py` · `scripts/probar_colision_email.py` ·
-`scripts/probar_firma_digital.py` · `scripts/probar_firma_transferencia.py`.
+`scripts/probar_firma_digital.py` · `scripts/probar_firma_transferencia.py` ·
+`scripts/probar_portal.py`.
 
 **Los cuatro flujos obligatorios de la entrega están implementados y probados de punta
 a punta contra el sistema real del MinTIC.**
@@ -505,6 +507,132 @@ auditoría de revocación -- sin dejar de existir. Se corrieron de nuevo como re
 un bug nuevo -- confirmaron que el enganche no rompió nada de lo que ya pasaba por esa
 misma función.
 
+**Portal del ciudadano (AD-11), primera pasada, implementado y probado de punta a
+punta el 2026-09-22.** Pantallas HTML servidas por la misma aplicación FastAPI (Jinja2
++ HTMX, sin framework de JavaScript, sin paso de build ni segunda unidad desplegable):
+iniciar sesión, registro, y la carpeta (listar con filtros, subir, ver el detalle de un
+documento con su estado de autenticación ante GovCarpeta, descargar, eliminar). Las
+demás pantallas (perfil, notificaciones, traslado a otro operador) quedan para la
+segunda pasada.
+
+La lógica de negocio de CU-01/CU-02 se extrajo de `app/identidad/registro.py` y
+`app/identidad/sesion.py` a `app/identidad/servicios.py`; la de CU-05/06/07/08/11 se
+extrajo de `app/documentos/router.py` a `app/documentos/servicios.py` (incluido
+`resolver_sustitucion`, que `app/documentos/entidades.py` importa ahora de ahí). Las
+rutas JSON quedaron como envoltorios delgados sobre esas mismas funciones -- se
+verificó que el esquema OpenAPI sigue reportando las mismas 19 rutas después de cada
+extracción, y que ningún código ni mensaje de error cambió. El portal (`app/portal/`)
+llama a esas mismas funciones directamente, nunca por HTTP contra su propia API: ver
+AD-11 (docs/especificacion.md) para la justificación completa.
+
+La sesión del portal viaja en una cookie (`app.portal.auth`, nombre
+`colcarpeta_sesion`) HttpOnly + SameSite=Strict + Secure (controlada por
+`PORTAL_COOKIE_SECURE`, `true` por defecto -- **nunca en `false` en `.env` real ni en
+Railway**, mismo patrón que `TRANSFERENCIA_EXIGIR_HTTPS`), que transporta el mismo JWT
+que ya emite `app.identidad.token` para la API: cerrar sesión en el portal borra la
+cookie pero no invalida el token si se usó también contra la API directamente (mismo
+comportamiento ya documentado para `DELETE /api/v1/sesion`). El portal no aparece en
+el esquema OpenAPI (`include_in_schema=False`): no es parte del contrato de la API.
+
+**`SameSite=Strict` es toda la protección contra falsificación de peticiones entre
+sitios (CSRF) de esta pasada -- no se agregó un token CSRF de doble envío aparte.**
+Con `Strict`, el navegador nunca adjunta la cookie en una petición que se origina en
+otro sitio, ni siquiera en una navegación de nivel superior (un enlace externo hacia el
+portal): cualquier formulario que un sitio atacante intente enviar hacia
+`/portal/carpeta/documentos`, `/portal/documentos/{id}/eliminar`, etc., llega sin la
+cookie, `ciudadano_actual_portal` no resuelve a nadie, y la operación termina en un
+redirect a iniciar sesión en vez de ejecutarse -- no hay ninguna petición de este
+portal que dependa de una cookie `Lax` o sin `SameSite` para funcionar. Es la defensa
+que recomienda OWASP para este patrón (sesión en cookie, sin necesidad de que el
+ciudadano llegue autenticado desde un enlace de otro sitio), y basta porque las únicas
+mutaciones del portal son `POST` que exigen esa misma cookie -- no hay ninguna
+operación de escritura detrás de un `GET`. La única limitación conocida es de
+navegadores muy antiguos que no implementan `SameSite` (tratan la cookie como si no
+lo tuviera, el mismo riesgo que ya existía antes de esta cookie), no un hueco en la
+implementación. Verificado leyendo el encabezado `Set-Cookie` real que emite
+`fijar_cookie_sesion` (trae `HttpOnly; SameSite=strict; Secure`); el cumplimiento de
+`SameSite` en sí lo hace el navegador, no el servidor, así que no hay forma de
+ejercitarlo con `httpx` (que no implementa esa política) dentro de las pruebas de
+Docker de esta tarea -- queda verificado por inspección del encabezado y por lo que
+especifica el estándar, no por una prueba de navegador real.
+
+`PORTAL_COOKIE_SECURE` es seguro por defecto (`true`) cuando la variable no está
+definida -- confirmado instanciando `Config()` sin la variable en el entorno ni en
+`.env`. El `.env` real y `.env.example` no la fijan (ver arriba, no hace falta:
+el default ya es el correcto), así que en Railway la cookie sale con `Secure` sin
+que nadie tenga que declarar nada; el único lugar del repositorio donde se pone en
+`false` es el entorno de `app-a` en `docker-compose.test.yml`, para las pruebas
+locales por HTTP simple entre contenedores.
+
+Cómo se muestra un documento (decisión de presentación, no de backend): "Certificado"
+si `documento.certificado` es verdadero, "Temporal" si no, con la nota en letra
+pequeña "Información proporcionada por ti" bajo lo temporal -- sin alarmas, el
+ciudadano no está haciendo nada indebido al subir su propio documento. El estado de la
+firma respeta sus tres valores reales sin colapsarlos: "Sin firma digital"
+(`firma_valida` es NULL), "Firma digital válida" (`true`), "Firma digital inválida"
+(`false`) -- las dos macros que deciden esta presentación viven en
+`app/portal/templates/_macros.html` para no repetir la decisión entre la lista y el
+detalle.
+
+La carga de un documento responde de inmediato aunque la validación de firma siga
+corriendo por detrás: eso ya era cierto a nivel de API (la validación la hace la
+bandeja de salida en segundo plano, AD-05) y el portal simplemente no espera por
+ella -- no se agregó ningún mecanismo de sondeo o actualización en vivo en esta
+pasada; para ver el resultado de una firma que se estaba validando al momento de
+subir, el ciudadano recarga la página del detalle.
+
+HTMX (2.0.4, vendorizado en `app/portal/static/htmx.min.js`, sin CDN) se usa para que
+eliminar un documento desde la lista de la carpeta no recargue la página completa
+(`hx-post` sobre un formulario real, que sigue funcionando sin JavaScript por
+degradación progresiva -- eliminar desde el detalle de un documento, en cambio, usa un
+formulario corriente sin HTMX porque esa página deja de tener sentido una vez que el
+documento se elimina). El resto de la navegación (filtros, paginación, subir, entrar)
+son formularios y enlaces corrientes: totalmente operables con teclado y sin
+JavaScript, cumpliendo el requisito de usabilidad del caso de estudio. La hoja de
+estilos (`app/portal/static/estilos.css`) es mobile-first, sin ningún framework de CSS,
+con foco visible (`:focus-visible`) y un enlace para saltar al contenido.
+
+Los formularios muestran los mensajes de `ErrorDeNegocio` tal cual (ya están escritos
+en lenguaje llano en toda la API, p. ej. "Usuario o contrasena incorrectos.") en vez de
+inventar una segunda capa de traducción; los errores de formato de Pydantic (cédula,
+correo, contraseña) se recogen aparte y se unen en una frase legible
+(`_mensaje_validacion` en `app/portal/router.py`). El login re-muestra el formulario
+con un segundo campo cuando el ciudadano tiene el segundo factor habilitado
+(`SEGUNDO_FACTOR_REQUERIDO`), sin necesidad de una pantalla aparte.
+
+No se expuso `sustituye_a` (CU-10) en el formulario de carga de esta primera pasada:
+sigue disponible por la API: se dejó fuera para no ampliar el alcance de "los
+cimientos y la carpeta" con una interacción de selección de documento que no se pidió
+explícitamente.
+
+Probado de punta a punta con `scripts/probar_portal.py`, contra `app-a` viva dentro de
+`docker-compose.test.yml` (con `PORTAL_COOKIE_SECURE=false`, nueva variable de entorno
+de ese servicio -- ver "Trampas" más abajo): registro por el formulario HTML, login con
+contraseña incorrecta primero (mensaje en lenguaje claro) y luego correcta, la cookie
+de sesión se fija y el cliente HTTP la conserva entre peticiones igual que un
+navegador, la carpeta vacía muestra el mensaje correcto, subir un documento lo deja
+visible de inmediato con la etiqueta "Temporal" y su nota de procedencia, el detalle
+muestra "Sin firma digital" (el PDF de prueba no está firmado) y la sección de
+autenticación ante GovCarpeta, la descarga devuelve exactamente los mismos bytes que
+se subieron, eliminar lo saca del listado con su mensaje de éxito, y cerrar sesión hace
+que `/portal/carpeta` vuelva a exigir inicio de sesión. Aparte, se verificaron
+directamente (renderizando `_macros.html` con Jinja2 en aislamiento, sin pasar por
+Docker) las seis combinaciones de `certificado`/`firma_valida` sobre las macros de
+presentación, para cubrir también los casos de firma válida e inválida que el
+documento de prueba (sin firma real) no ejercita por sí solo.
+
+**Trampa nueva, encontrada al probar el portal (2026-09-22), no documentada en ningún
+lado hasta ahora:** una cookie `Secure` nunca se envía sobre una conexión HTTP simple
+-- ni un navegador real ni el cliente de pruebas (`httpx`, que respeta esa regla igual
+que el `http.cookiejar` estándar de Python) la reenvía en la siguiente petición. La
+primera corrida de `probar_portal.py` contra `app-a` (que dentro de
+`docker-compose.test.yml` habla HTTP simple entre contenedores, sin TLS) parecía que el
+login fallaba en silencio -- sin ningún error de credenciales, la página simplemente
+volvía a mostrar el formulario de inicio de sesión vacío -- hasta confirmar que la
+cookie sí se fijaba en la respuesta pero nunca volvía en la petición siguiente.
+Corregido agregando `PORTAL_COOKIE_SECURE=false` al entorno de `app-a` en
+`docker-compose.test.yml`, mismo patrón ya usado para `TRANSFERENCIA_EXIGIR_HTTPS`.
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio
@@ -520,6 +648,12 @@ a la base.
 Notificaciones más allá del correo de registro, primer acceso, reenvío y depósito de un
 documento por una entidad (ver arriba), consola de administración, y CU-06 sin
 `descarga` masiva ni paquetes (RF27).
+
+**Portal del ciudadano, segunda pasada (AD-11):** perfil (`GET`/`PATCH
+/api/v1/perfil`), centro de notificaciones (CU-17), traslado a otro operador (CU-03),
+primer acceso y su reenvío, y segundo factor (habilitar/confirmar TOTP) no tienen
+pantalla propia todavía -- solo existen por la API JSON. El formulario de carga de la
+carpeta tampoco expone `sustituye_a` (CU-10): sigue disponible por la API.
 
 No registrar `registerTransferEndPoint` todavía: ver "Prohibido".
 
@@ -549,14 +683,17 @@ app/
     token_acceso.py            secretos opacos de alta entropia (SHA-256): primer acceso Y
                                 clave de API de una entidad emisora (CU-13)
     dependencias.py            auth de sesión + resolver_usuario (cedula o email_carpeta)
+    servicios.py               CU-01/CU-02: logica de negocio compartida entre la API JSON
+                                y el portal (AD-11) -- registro e inicio/cierre de sesion
     primer_acceso.py           POST /api/v1/primer-acceso y /primer-acceso/reenviar
     perfil.py                  GET/PATCH /api/v1/perfil (datos y cuota, CU-03 no incluido: ver interoperabilidad/)
   notificaciones/
     correo.py                  envío de correo simulado (sin proveedor real integrado) + registro en `notificacion`
     router.py                  GET /api/v1/notificaciones y POST .../leida (CU-17)
   documentos/
-    router.py                  CU-05/06/07/08/10: carga, listado con filtros, consulta,
-                                descarga, eliminación diferida y sustitución sin perder historia
+    router.py                  CU-05/06/07/08/10: rutas JSON, delgadas sobre servicios.py
+    servicios.py               logica de negocio compartida entre la API JSON y el portal
+                                (AD-11): carga, listado, descarga, eliminacion, autenticacion
     entidades.py              POST /api/v1/entidades/documentos: deposito certificado por
                                 una entidad emisora autenticada (CU-13)
     firma.py                   CU-09: validacion de firma digital PAdES con pyHanko,
@@ -571,6 +708,13 @@ app/
                                 emisión del token de primer acceso
     transferencias.py          router (/api, CU-16) + router_propio (/api/v1/perfil/traslado, CU-03)
   mock/registraduria.py        Registraduría simulada
+  portal/                      AD-11: pantallas HTML del ciudadano (Jinja2 + HTMX),
+                                primera pasada -- no aparece en el esquema OpenAPI
+    auth.py                    cookie de sesion del portal (HttpOnly + SameSite + Secure)
+    router.py                  rutas HTML: sesion, registro, carpeta, detalle de documento
+    templates/                 base.html, sesion.html, registro.html, carpeta.html,
+                                documento.html, _macros.html (etiquetas de procedencia/firma)
+    static/                    htmx.min.js (vendorizado) y estilos.css (mobile-first)
 alembic/versions/              migraciones
 docs/especificacion.md         la especificación completa
 scripts/probar_govcarpeta.py   prueba de humo contra la API real
@@ -586,6 +730,7 @@ scripts/probar_colision_email.py  _recibir_transferencia en aislamiento: colisio
 scripts/alta_entidad_emisora.py  alta, rotacion, revocacion y reactivacion de una entidad emisora (CU-13); no es una ruta publica
 scripts/probar_firma_digital.py  CU-09: genera con pyHanko un PDF firmado/alterado/sin firma y valida los tres
 scripts/probar_firma_transferencia.py  CU-09 en CU-16: documento certificado por el origen que llega firmado y alterado
+scripts/probar_portal.py  portal (AD-11) de punta a punta por las pantallas HTML: registro, login, subir, listar, ver, descargar, eliminar, salir
 scripts/mock_centralizador.py  centralizador falso en memoria, solo para esas pruebas
 Dockerfile                     imagen de la app; la usa Railway Y docker-compose.test.yml
 docker-compose.test.yml        solo para probar en Linux en esta maquina (Docker Desktop),
@@ -750,6 +895,7 @@ docker compose -f docker-compose.test.yml run --rm prueba-reenvio-primer-acceso 
 docker compose -f docker-compose.test.yml run --rm prueba-carpeta-completa   # CU-07/08/10/11/13/17 + perfil
 docker compose -f docker-compose.test.yml run --rm prueba-firma-digital   # CU-09: firmado/alterado/sin firma
 docker compose -f docker-compose.test.yml run --rm prueba-firma-transferencia   # CU-09 en CU-16
+docker compose -f docker-compose.test.yml run --rm prueba-portal   # portal (AD-11) por las pantallas HTML
 docker compose -f docker-compose.test.yml down -v             # -v: tambien borra postgres-a/b
 ```
 
@@ -861,6 +1007,23 @@ Probado de punta a punta el 2026-09-22, junto con `probar_envio_transferencia.py
 `probar_regreso_antes_de_purga.py` y `probar_reconciliacion.py` como regresión (los
 otros caminos que ya pasaban por `_recibir_transferencia`): los cuatro siguen sin
 fallos.
+
+`scripts/probar_portal.py` ejercita el portal del ciudadano (AD-11) por sus pantallas
+HTML, contra `app-a` viva: registra una cédula de prueba por el formulario de
+`/portal/registro`, espera a que quede `ACTIVO`, intenta iniciar sesión con una
+contraseña incorrecta primero (confirma el mensaje en lenguaje claro), inicia sesión
+de verdad por `/portal/sesion` y confirma que la cookie de sesión queda fija en el
+cliente HTTP (`httpx.AsyncClient`, que conserva cookies entre peticiones igual que un
+navegador), sube un documento por el formulario de la carpeta y confirma que aparece
+de inmediato con la etiqueta "Temporal" y su nota de procedencia, entra al detalle y
+confirma "Sin firma digital" (el PDF de prueba no está firmado) y la sección de
+autenticación ante GovCarpeta, descarga el documento y compara los bytes exactos
+contra lo subido, lo elimina desde la carpeta y confirma el mensaje de éxito y que
+desaparece del listado, y cierra sesión confirmando que `/portal/carpeta` vuelve a
+exigir inicio de sesión. Encontró la trampa de la cookie `Secure` sobre HTTP simple
+descrita arriba (corregida con `PORTAL_COOKIE_SECURE=false` en el entorno de `app-a`
+de este archivo) -- ese fue el único bug real que encontró; el resto de la prueba pasó
+sin ajustes adicionales.
 
 ## Convenciones
 

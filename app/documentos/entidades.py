@@ -35,7 +35,7 @@ from sqlalchemy import select
 from app.config import get_config
 from app.db import SessionLocal
 from app.documentos.almacenamiento import FalloAlmacenamiento, eliminar_objeto, generar_clave, subir_objeto
-from app.documentos.router import resolver_sustitucion
+from app.documentos.servicios import resolver_sustitucion
 from app.documentos.tipos import TIPOS_PERMITIDOS, detectar_content_type
 from app.errors import ErrorDeNegocio
 from app.identidad.token_acceso import hash_token

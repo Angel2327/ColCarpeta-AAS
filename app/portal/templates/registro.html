@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block titulo %}Crear tu carpeta{% endblock %}
+{% block contenido %}
+<h1>Crear tu carpeta ciudadana</h1>
+
+<div class="tarjeta">
+  {% if error %}
+  <p class="aviso aviso--error" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <form method="post" action="/portal/registro" novalidate>
+    <div class="campo">
+      <label for="cedula">Cedula</label>
+      <input type="text" id="cedula" inputmode="numeric" name="cedula" value="{{ valores.cedula if valores else '' }}" required autofocus>
+    </div>
+    <div class="campo">
+      <label for="nombre">Nombre completo</label>
+      <input type="text" id="nombre" name="nombre" value="{{ valores.nombre if valores else '' }}" required>
+    </div>
+    <div class="campo">
+      <label for="direccion">Direccion</label>
+      <input type="text" id="direccion" name="direccion" value="{{ valores.direccion if valores else '' }}" required>
+    </div>
+    <div class="campo">
+      <label for="telefono">Telefono</label>
+      <input type="tel" id="telefono" name="telefono" value="{{ valores.telefono if valores else '' }}" required>
+    </div>
+    <div class="campo">
+      <label for="email_personal">Correo personal</label>
+      <input type="email" id="email_personal" name="email_personal" value="{{ valores.email_personal if valores else '' }}" required autocomplete="email">
+      <span class="ayuda">Aqui te avisamos de novedades en tu carpeta. No es tu direccion de carpeta: esa se genera sola.</span>
+    </div>
+    <div class="campo">
+      <label for="password">Contrasena</label>
+      <input type="password" id="password" name="password" required autocomplete="new-password">
+      <span class="ayuda">Minimo 10 caracteres, con al menos una letra y un numero.</span>
+    </div>
+    <button type="submit">Crear mi carpeta</button>
+  </form>
+</div>
+
+<p>¿Ya tienes una carpeta? <a href="/portal/sesion">Inicia sesion</a>.</p>
+{% endblock %}

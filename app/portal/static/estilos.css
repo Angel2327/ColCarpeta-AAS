@@ -1,0 +1,263 @@
+/* ColCarpeta -- portal del ciudadano. Mobile-first, sin framework de CSS. */
+
+:root {
+  --color-texto: #1a1a2e;
+  --color-fondo: #ffffff;
+  --color-borde: #c9ccd6;
+  --color-primario: #1d4ed8;
+  --color-primario-oscuro: #1e3a8a;
+  --color-exito-fondo: #e8f7ee;
+  --color-exito-texto: #14532d;
+  --color-error-fondo: #fdecec;
+  --color-error-texto: #7f1d1d;
+  --color-atencion-fondo: #fff8e1;
+  --color-atencion-texto: #7a5b00;
+  --color-suave: #f4f5f8;
+  --color-texto-tenue: #5b5f6d;
+  --radio: 8px;
+  --espacio: 1rem;
+  font-size: 17px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--color-texto);
+  background: var(--color-suave);
+  line-height: 1.5;
+}
+
+.contenedor {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 var(--espacio);
+}
+
+.saltar-al-contenido {
+  position: absolute;
+  left: -999px;
+  top: 0;
+  background: var(--color-primario);
+  color: #fff;
+  padding: 0.75rem 1rem;
+  z-index: 100;
+}
+.saltar-al-contenido:focus {
+  left: 0.5rem;
+  top: 0.5rem;
+}
+
+a { color: var(--color-primario); }
+
+:focus-visible {
+  outline: 3px solid var(--color-primario);
+  outline-offset: 2px;
+}
+
+.encabezado {
+  background: var(--color-fondo);
+  border-bottom: 1px solid var(--color-borde);
+}
+.encabezado__barra {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.encabezado__marca {
+  font-weight: 700;
+  font-size: 1.15rem;
+  text-decoration: none;
+  color: var(--color-texto);
+}
+.encabezado__nav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+main.contenedor {
+  padding-top: 1.25rem;
+  padding-bottom: 3rem;
+}
+
+h1 { font-size: 1.5rem; margin: 0 0 1rem; }
+h2 { font-size: 1.15rem; margin: 1.75rem 0 0.75rem; }
+
+.tarjeta {
+  background: var(--color-fondo);
+  border: 1px solid var(--color-borde);
+  border-radius: var(--radio);
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+/* --- formularios ------------------------------------------------------------- */
+
+form { margin: 0; }
+
+.campo { margin-bottom: 1rem; }
+
+.campo label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.3rem;
+}
+
+.campo .ayuda {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--color-texto-tenue);
+  margin-top: 0.25rem;
+}
+
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="tel"],
+input[type="date"],
+input[type="file"],
+select {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--color-borde);
+  border-radius: var(--radio);
+  font-size: 1rem;
+  background: var(--color-fondo);
+  color: var(--color-texto);
+}
+
+input:invalid,
+.campo--error input {
+  border-color: var(--color-error-texto);
+}
+
+button, .boton {
+  display: inline-block;
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 0.65rem 1.25rem;
+  border-radius: var(--radio);
+  border: 1px solid var(--color-primario);
+  background: var(--color-primario);
+  color: #fff;
+  cursor: pointer;
+  text-decoration: none;
+  text-align: center;
+}
+button:hover, .boton:hover { background: var(--color-primario-oscuro); }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.boton--secundario {
+  background: transparent;
+  color: var(--color-primario);
+}
+.boton--secundario:hover { background: var(--color-suave); }
+
+.boton--peligro {
+  background: var(--color-error-texto);
+  border-color: var(--color-error-texto);
+}
+.boton--peligro:hover { background: #5c1414; }
+
+.boton-enlace {
+  background: none;
+  border: none;
+  color: var(--color-primario);
+  text-decoration: underline;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.acciones { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
+
+/* --- avisos -------------------------------------------------------------- */
+
+.aviso {
+  border-radius: var(--radio);
+  padding: 0.85rem 1rem;
+  margin-bottom: 1.25rem;
+  font-size: 0.95rem;
+}
+.aviso--error { background: var(--color-error-fondo); color: var(--color-error-texto); }
+.aviso--exito { background: var(--color-exito-fondo); color: var(--color-exito-texto); }
+.aviso--atencion { background: var(--color-atencion-fondo); color: var(--color-atencion-texto); }
+
+/* --- etiquetas de procedencia y estado ------------------------------------ */
+
+.etiqueta {
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.etiqueta--certificado { background: var(--color-exito-fondo); color: var(--color-exito-texto); }
+.etiqueta--temporal { background: var(--color-suave); color: var(--color-texto-tenue); border: 1px solid var(--color-borde); }
+.etiqueta--firma-valida { background: var(--color-exito-fondo); color: var(--color-exito-texto); }
+.etiqueta--firma-invalida { background: var(--color-error-fondo); color: var(--color-error-texto); }
+.etiqueta--firma-ausente { background: var(--color-suave); color: var(--color-texto-tenue); border: 1px solid var(--color-borde); }
+
+.nota-pequena {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--color-texto-tenue);
+  margin-top: 0.2rem;
+}
+
+/* --- lista de documentos --------------------------------------------------- */
+
+.filtros {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+.filtros .campo { margin-bottom: 0; }
+
+.lista-documentos { list-style: none; margin: 0; padding: 0; }
+
+.documento-fila {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 1rem;
+  border: 1px solid var(--color-borde);
+  border-radius: var(--radio);
+  background: var(--color-fondo);
+  margin-bottom: 0.75rem;
+}
+.documento-fila__cabecera {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.documento-fila__titulo { font-weight: 600; text-decoration: none; color: var(--color-texto); }
+.documento-fila__titulo:hover { text-decoration: underline; }
+.documento-fila__meta { font-size: 0.85rem; color: var(--color-texto-tenue); }
+.documento-fila__acciones { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+
+.vacio {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--color-texto-tenue);
+}
+
+.paginacion { display: flex; justify-content: space-between; margin-top: 1rem; }
+
+dl.detalle { margin: 0; }
+dl.detalle dt { font-weight: 600; margin-top: 0.75rem; }
+dl.detalle dd { margin: 0.15rem 0 0; }
+
+@media (min-width: 640px) {
+  :root { font-size: 16px; }
+  .filtros { grid-template-columns: repeat(2, 1fr); }
+}

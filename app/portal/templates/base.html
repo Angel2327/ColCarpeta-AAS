@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block titulo %}ColCarpeta{% endblock %} — ColCarpeta</title>
+  <link rel="stylesheet" href="/portal/static/estilos.css">
+  <script src="/portal/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <a class="saltar-al-contenido" href="#contenido">Saltar al contenido</a>
+
+  <header class="encabezado">
+    <div class="contenedor encabezado__barra">
+      <a class="encabezado__marca" href="{{ '/portal/carpeta' if ciudadano else '/portal/sesion' }}">ColCarpeta</a>
+      {% if ciudadano %}
+      <nav class="encabezado__nav" aria-label="Navegacion principal">
+        <a href="/portal/carpeta">Mi carpeta</a>
+        <form method="post" action="/portal/salir" class="encabezado__salir">
+          <button type="submit" class="boton-enlace">Cerrar sesion</button>
+        </form>
+      </nav>
+      {% endif %}
+    </div>
+  </header>
+
+  <main id="contenido" class="contenedor">
+    {% if mensaje_exito %}
+    <p class="aviso aviso--exito" role="status">{{ mensaje_exito }}</p>
+    {% endif %}
+    {% block contenido %}{% endblock %}
+  </main>
+</body>
+</html>

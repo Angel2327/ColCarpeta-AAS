@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block titulo %}Iniciar sesion{% endblock %}
+{% block contenido %}
+<h1>Iniciar sesion</h1>
+
+<div class="tarjeta">
+  {% if error %}
+  <p class="aviso aviso--error" role="alert">{{ error }}</p>
+  {% endif %}
+  {% if mostrar_totp %}
+  <p class="aviso aviso--atencion" role="status">Ingresa el codigo de tu segundo factor para continuar.</p>
+  {% endif %}
+
+  <form method="post" action="/portal/sesion" novalidate>
+    <div class="campo">
+      <label for="usuario">Cedula o correo de tu carpeta</label>
+      <input type="text" id="usuario" name="usuario" value="{{ usuario or '' }}" required {{ 'autofocus' if not mostrar_totp else '' }} autocomplete="username">
+    </div>
+    <div class="campo">
+      <label for="password">Contrasena</label>
+      <input type="password" id="password" name="password" required autocomplete="current-password">
+    </div>
+    {% if mostrar_totp %}
+    <div class="campo">
+      <label for="codigo_totp">Codigo del segundo factor</label>
+      <input type="text" id="codigo_totp" name="codigo_totp" inputmode="numeric" autocomplete="one-time-code" autofocus required>
+    </div>
+    {% endif %}
+    <button type="submit">Entrar</button>
+  </form>
+</div>
+
+<p>¿No tienes una carpeta todavia? <a href="/portal/registro">Registrate</a>.</p>
+{% endblock %}

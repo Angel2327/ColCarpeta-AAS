@@ -1,9 +1,15 @@
-"""CU-05: carga de documentos, y las consultas basicas de la carpeta (CU-06/CU-07).
+"""CU-05: carga de documentos, y las consultas basicas de la carpeta (CU-06/CU-07) --
+ruta JSON de la API.
 
-Ver docs/especificacion.md: "Flujos a implementar" (flujo 3), "Contrato de la API
-propia" (documentos), "Flujos alternos y de excepcion" (CU-05, A1-A2, E1-E5),
-"Parametros y limites" (cuota, tamano, tipos, paginacion) y "Seguridad y manejo de
-documentos" (enlaces firmados, claves de objeto aleatorias).
+La lógica de negocio vive en `app.documentos.servicios`, compartida con las pantallas
+de la carpeta del portal (`app.portal`): esta ruta solo adapta esas llamadas al formato
+JSON de la API (lee `UploadFile`/`Form`, traduce a los modelos `Respuesta*` de abajo, y
+fija el código de estado según lo que el servicio devuelve). Ver
+docs/especificacion.md: "Flujos a implementar" (flujo 3), "Contrato de la API propia"
+(documentos), "Flujos alternos y de excepcion" (CU-05, A1-A2, E1-E5), "Parametros y
+limites" (cuota, tamano, tipos, paginacion) y "Seguridad y manejo de documentos"
+(enlaces firmados, claves de objeto aleatorias). AD-11 explica por qué el portal no
+llama a esta ruta por HTTP en vez de compartir la función de servicio.
 
 A1 (firma digital, CU-09): si el archivo es un PDF, se encola `validarFirma` en la misma
 transaccion que crea el documento -- la validacion criptografica corre en segundo plano
@@ -42,36 +48,17 @@ siempre como actor "sistema" al aplicar el resultado, sea quien sea quien encolo
 
 from __future__ import annotations
 
-import contextlib
-import hashlib
 import uuid
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_config
-from app.db import SessionLocal
-from app.documentos.almacenamiento import FalloAlmacenamiento, eliminar_objeto, generar_clave, generar_url_descarga, subir_objeto
-from app.documentos.tipos import TIPOS_PERMITIDOS, detectar_content_type
-from app.errors import ErrorDeNegocio
+from app.documentos import servicios
 from app.identidad.dependencias import ciudadano_actual
-from app.models import (
-    Auditoria,
-    Ciudadano,
-    Documento,
-    EstadoAutenticacionDocumento,
-    EstadoCiudadano,
-    EstadoDocumento,
-    Outbox,
-)
+from app.models import Ciudadano, Documento, EstadoAutenticacionDocumento, EstadoDocumento
 
 router = APIRouter(prefix="/api/v1/documentos", tags=["documentos"])
-
-TAMANO_PAGINA_DEFECTO = 20
-TAMANO_PAGINA_MAXIMO = 100
 
 
 class RespuestaDocumento(BaseModel):
@@ -135,31 +122,6 @@ def _correlation_id(request: Request) -> str | None:
     return getattr(request.state, "correlation_id", None)
 
 
-def _exigir_activo(ciudadano: Ciudadano) -> None:
-    if ciudadano.estado != EstadoCiudadano.ACTIVO:
-        raise ErrorDeNegocio("ESTADO_INVALIDO", "Tu carpeta no esta activa.")
-
-
-async def resolver_sustitucion(
-    session: AsyncSession, *, ciudadano_id: int, sustituye_a: uuid.UUID | None
-) -> Documento | None:
-    """CU-10: valida y devuelve el documento que una nueva carga sustituye, o None si
-    `sustituye_a` no vino. Compartido entre la carga propia del ciudadano
-    (`cargar_documento`) y el depósito de una entidad emisora
-    (`app.documentos.entidades`, CU-13), que también puede certificar el reemplazo de
-    un documento temporal existente."""
-    if sustituye_a is None:
-        return None
-    anterior = await session.get(Documento, sustituye_a)
-    if anterior is None or anterior.estado != EstadoDocumento.ACTIVO:
-        raise ErrorDeNegocio("RECURSO_NO_ENCONTRADO", "El documento a sustituir no existe.")
-    if anterior.ciudadano_id != ciudadano_id:
-        raise ErrorDeNegocio("NO_AUTORIZADO", "El documento a sustituir no pertenece a esa carpeta.")
-    if anterior.certificado:
-        raise ErrorDeNegocio("ESTADO_INVALIDO", "No se puede sustituir un documento certificado.")
-    return anterior
-
-
 def _a_respuesta(d: Documento) -> RespuestaDocumento:
     return RespuestaDocumento(
         id=d.id,
@@ -180,9 +142,12 @@ def _a_respuesta(d: Documento) -> RespuestaDocumento:
     )
 
 
-def _a_datetime_utc(d: date, *, fin_del_dia: bool = False) -> datetime:
-    hora = time.max if fin_del_dia else time.min
-    return datetime.combine(d, hora, tzinfo=timezone.utc)
+def _a_respuesta_autenticacion(d: Documento) -> RespuestaAutenticacion:
+    return RespuestaAutenticacion(
+        estado=d.estado_autenticacion,
+        respuesta_centralizador=d.respuesta_centralizador,
+        actualizado_en=d.autenticacion_actualizada_en,
+    )
 
 
 @router.post("", response_model=RespuestaDocumento)
@@ -220,138 +185,19 @@ async def cargar_documento(
     o si `sustituye_a` corresponde a un documento certificado, 404 si `sustituye_a` no
     existe, o 403 si no pertenece al ciudadano autenticado.
     """
-    cfg = get_config()
     contenido = await archivo.read()
-
-    # --- E3: tamano sobre el limite -------------------------------------------------
-    if len(contenido) > cfg.tamano_maximo_archivo_bytes:
-        raise ErrorDeNegocio(
-            "ARCHIVO_DEMASIADO_GRANDE",
-            "El archivo excede el tamano maximo permitido.",
-            detalle={"limite_bytes": cfg.tamano_maximo_archivo_bytes},
-        )
-
-    # --- E2: tipo no permitido (por contenido, no por extension) --------------------
-    content_type = detectar_content_type(contenido)
-    if content_type is None:
-        raise ErrorDeNegocio(
-            "TIPO_NO_PERMITIDO",
-            "El tipo de archivo no esta permitido.",
-            detalle={"tipos_permitidos": list(TIPOS_PERMITIDOS)},
-        )
-
-    hash_sha256 = hashlib.sha256(contenido).hexdigest()
-
-    async with SessionLocal() as session:
-        ciudadano = await session.get(Ciudadano, actual.id)
-        assert ciudadano is not None
-        _exigir_activo(ciudadano)
-
-        # --- E5: archivo duplicado segun hash_sha256 (solo entre lo vigente: un mismo
-        # archivo vuelto a cargar despues de eliminarlo o de que fuera reemplazado crea
-        # un documento nuevo, no reaparece el viejo oculto) -------------------------
-        r = await session.execute(
-            select(Documento).where(
-                Documento.ciudadano_id == ciudadano.id,
-                Documento.hash_sha256 == hash_sha256,
-                Documento.estado == EstadoDocumento.ACTIVO,
-            )
-        )
-        duplicado = r.scalar_one_or_none()
-        if duplicado is not None:
-            response.status_code = 200
-            return _a_respuesta(duplicado)
-
-        # --- A2/CU-10: sustituye a un documento temporal, solo si el ciudadano lo pide
-        anterior = await resolver_sustitucion(session, ciudadano_id=ciudadano.id, sustituye_a=sustituye_a)
-
-        # --- E1: cuota agotada (solo temporales activos; certificados no consumen
-        # cuota, y lo reemplazado/eliminado ya no cuenta) ----------------------------
-        r = await session.execute(
-            select(func.coalesce(func.sum(Documento.tamano_bytes), 0))
-            .select_from(Documento)
-            .where(
-                Documento.ciudadano_id == ciudadano.id,
-                Documento.certificado.is_(False),
-                Documento.estado == EstadoDocumento.ACTIVO,
-            )
-        )
-        # SUM(bigint) en Postgres devuelve NUMERIC -> Decimal; JSONResponse usa
-        # json.dumps plano y no sabe serializar Decimal, hay que volverlo int.
-        usado = int(r.scalar_one())
-        if anterior is not None:
-            # Todavia ACTIVO en este punto (se marca REEMPLAZADO mas abajo, tras superar
-            # esta validacion): la consulta de arriba ya lo conto, hay que descontarlo
-            # para no cobrarle al ciudadano el espacio del documento que esta dejando ir.
-            usado -= anterior.tamano_bytes
-        if usado + len(contenido) > cfg.cuota_ciudadano_bytes:
-            raise ErrorDeNegocio(
-                "CUOTA_AGOTADA",
-                "La cuota de documentos temporales esta agotada.",
-                detalle={"cuota_bytes": cfg.cuota_ciudadano_bytes, "usado_bytes": usado},
-            )
-
-        # --- E4: falla del almacenamiento => nada se persiste (atomico) -------------
-        clave = generar_clave(content_type)
-        subir_objeto(clave=clave, contenido=contenido, content_type=content_type)
-
-        nuevo_id = uuid.uuid4()
-        nuevo = Documento(
-            id=nuevo_id,
-            ciudadano_id=ciudadano.id,
-            titulo=titulo,
-            tipo=tipo,
-            entidad_emisora=entidad_emisora,
-            fecha_emision=_a_datetime_utc(fecha_emision) if fecha_emision else None,
-            s3_key=clave,
-            content_type=content_type,
-            tamano_bytes=len(contenido),
-            hash_sha256=hash_sha256,
-            certificado=False,
-            firma_valida=None,
-            sustituye_a_id=anterior.id if anterior is not None else None,
-        )
-        session.add(nuevo)
-
-        # CU-10: el anterior no se borra -- pasa a REEMPLAZADO, fila y objeto se
-        # conservan como historia. Deja de listarse (CU-07) y de contar contra la
-        # cuota (arriba), pero sigue siendo consultable por su id.
-        if anterior is not None:
-            anterior.estado = EstadoDocumento.REEMPLAZADO
-
-        # A1/CU-09: solo un PDF puede traer una firma PAdES que valer la pena revisar.
-        # La validacion misma corre en segundo plano (AD-05) -- ver app.interoperabilidad.
-        # outbox._validar_firma.
-        if content_type == "application/pdf":
-            session.add(
-                Outbox(
-                    operacion="validarFirma",
-                    payload={"documento_id": str(nuevo_id), "correlation_id": _correlation_id(request)},
-                )
-            )
-
-        session.add(
-            Auditoria(
-                actor=str(ciudadano.id),
-                accion="documento.sustituido" if anterior is not None else "documento.cargado",
-                recurso=str(nuevo_id),
-                ciudadano_id=ciudadano.id,
-                correlation_id=_correlation_id(request),
-                detalle={"documento_anterior_id": str(anterior.id) if anterior is not None else None},
-            )
-        )
-
-        try:
-            await session.commit()
-        except Exception:
-            with contextlib.suppress(FalloAlmacenamiento):
-                eliminar_objeto(clave=clave)
-            raise
-
-        await session.refresh(nuevo)
-
-    response.status_code = 201
-    return _a_respuesta(nuevo)
+    documento, fue_creado = await servicios.cargar_documento(
+        ciudadano_id=actual.id,
+        contenido=contenido,
+        titulo=titulo,
+        tipo=tipo,
+        entidad_emisora=entidad_emisora,
+        fecha_emision=fecha_emision,
+        sustituye_a=sustituye_a,
+        correlation_id=_correlation_id(request),
+    )
+    response.status_code = 201 if fue_creado else 200
+    return _a_respuesta(documento)
 
 
 @router.get("", response_model=RespuestaListaDocumentos)
@@ -364,7 +210,7 @@ async def listar_documentos(
     estado_autenticacion: EstadoAutenticacionDocumento | None = None,
     q: str | None = None,
     page: int = 1,
-    size: int = TAMANO_PAGINA_DEFECTO,
+    size: int = servicios.TAMANO_PAGINA_DEFECTO,
     actual: Ciudadano = Depends(ciudadano_actual),
 ) -> RespuestaListaDocumentos:
     """Busca y clasifica los documentos del ciudadano autenticado (CU-06, CU-07).
@@ -378,52 +224,19 @@ async def listar_documentos(
     carpeta: los reemplazados por una versión más reciente o eliminados no aparecen
     aquí, aunque siguen siendo consultables por su id.
     """
-    page = max(page, 1)
-    size = max(1, min(size, TAMANO_PAGINA_MAXIMO))
-
-    condiciones = [Documento.ciudadano_id == actual.id, Documento.estado == EstadoDocumento.ACTIVO]
-    if tipo:
-        condiciones.append(Documento.tipo == tipo)
-    if entidad:
-        condiciones.append(Documento.entidad_emisora.ilike(f"%{entidad}%"))
-    if desde:
-        condiciones.append(Documento.fecha_emision >= _a_datetime_utc(desde))
-    if hasta:
-        condiciones.append(Documento.fecha_emision <= _a_datetime_utc(hasta, fin_del_dia=True))
-    if certificado is not None:
-        condiciones.append(Documento.certificado.is_(certificado))
-    if estado_autenticacion is not None:
-        condiciones.append(Documento.estado_autenticacion == estado_autenticacion)
-    if q:
-        condiciones.append(Documento.titulo.ilike(f"%{q}%"))
-
-    async with SessionLocal() as session:
-        total = (
-            await session.execute(select(func.count()).select_from(Documento).where(*condiciones))
-        ).scalar_one()
-        resultado = await session.execute(
-            select(Documento)
-            .where(*condiciones)
-            .order_by(Documento.creado_en.desc())
-            .offset((page - 1) * size)
-            .limit(size)
-        )
-        items = resultado.scalars().all()
-
+    items, total, page, size = await servicios.listar_documentos(
+        ciudadano_id=actual.id,
+        tipo=tipo,
+        entidad=entidad,
+        desde=desde,
+        hasta=hasta,
+        certificado=certificado,
+        estado_autenticacion=estado_autenticacion,
+        q=q,
+        page=page,
+        size=size,
+    )
     return RespuestaListaDocumentos(items=[_a_respuesta(d) for d in items], total=total, page=page, size=size)
-
-
-async def _obtener_propio(session: AsyncSession, documento_id: uuid.UUID, ciudadano_id: int) -> Documento:
-    """Devuelve un documento propio siempre que siga siendo accesible: ACTIVO o
-    REEMPLAZADO (CU-10 lo conserva como historia consultable). Uno ELIMINADO (CU-08) se
-    trata igual que si no existiera -- "dejan de ser accesibles" (especificacion,
-    "Borrado")."""
-    documento = await session.get(Documento, documento_id)
-    if documento is None or documento.estado == EstadoDocumento.ELIMINADO:
-        raise ErrorDeNegocio("RECURSO_NO_ENCONTRADO", "El documento no existe.")
-    if documento.ciudadano_id != ciudadano_id:
-        raise ErrorDeNegocio("NO_AUTORIZADO", "El documento no pertenece a tu carpeta.")
-    return documento
 
 
 @router.get("/{documento_id}", response_model=RespuestaDocumento)
@@ -434,9 +247,8 @@ async def obtener_documento(documento_id: uuid.UUID, actual: Ciudadano = Depends
     Devuelve 404 si el documento no existe o fue eliminado, o 403 si no pertenece al
     ciudadano autenticado.
     """
-    async with SessionLocal() as session:
-        documento = await _obtener_propio(session, documento_id, actual.id)
-        return _a_respuesta(documento)
+    documento = await servicios.obtener_documento(ciudadano_id=actual.id, documento_id=documento_id)
+    return _a_respuesta(documento)
 
 
 @router.delete("/{documento_id}", status_code=204, response_model=None)
@@ -451,29 +263,7 @@ async def eliminar_documento(
     ciudadano autenticado, 409 si el documento está certificado, o 409 si ya fue
     reemplazado por una versión más reciente.
     """
-    cfg = get_config()
-    async with SessionLocal() as session:
-        documento = await _obtener_propio(session, documento_id, actual.id)
-
-        if documento.certificado:
-            raise ErrorDeNegocio("DOCUMENTO_CERTIFICADO", "No se puede eliminar un documento certificado.")
-        if documento.estado != EstadoDocumento.ACTIVO:
-            raise ErrorDeNegocio("ESTADO_INVALIDO", "El documento ya fue reemplazado por una version mas reciente.")
-
-        documento.estado = EstadoDocumento.ELIMINADO
-        documento.purgar_despues_de = datetime.now(timezone.utc) + timedelta(days=cfg.purge_delay_days)
-
-        session.add(
-            Auditoria(
-                actor=str(actual.id),
-                accion="documento.eliminado",
-                recurso=str(documento.id),
-                ciudadano_id=actual.id,
-                correlation_id=_correlation_id(request),
-                detalle={"purgar_despues_de": documento.purgar_despues_de.isoformat()},
-            )
-        )
-        await session.commit()
+    await servicios.eliminar_documento(ciudadano_id=actual.id, documento_id=documento_id, correlation_id=_correlation_id(request))
 
 
 @router.get("/{documento_id}/descarga", response_model=RespuestaDescarga)
@@ -486,36 +276,10 @@ async def descargar_documento(
     almacena, y deja de funcionar una vez vencida. Devuelve 404 si el documento no
     existe, o 403 si no pertenece al ciudadano autenticado.
     """
-    cfg = get_config()
-    async with SessionLocal() as session:
-        documento = await _obtener_propio(session, documento_id, actual.id)
-
-        url = generar_url_descarga(clave=documento.s3_key, ttl_segundos=cfg.presigned_url_ttl_descarga)
-        expira_en = datetime.now(timezone.utc) + timedelta(seconds=cfg.presigned_url_ttl_descarga)
-
-        # "Cada generacion de un enlace firmado se registra en auditoria con el
-        # documento, el destino y el momento" (Seguridad y manejo de documentos).
-        session.add(
-            Auditoria(
-                actor=str(actual.id),
-                accion="documento.enlace_generado",
-                recurso=str(documento.id),
-                ciudadano_id=actual.id,
-                correlation_id=_correlation_id(request),
-                detalle={"destino": "ciudadano", "expira_en": expira_en.isoformat()},
-            )
-        )
-        await session.commit()
-
-    return RespuestaDescarga(url=url, expira_en=expira_en)
-
-
-def _a_respuesta_autenticacion(d: Documento) -> RespuestaAutenticacion:
-    return RespuestaAutenticacion(
-        estado=d.estado_autenticacion,
-        respuesta_centralizador=d.respuesta_centralizador,
-        actualizado_en=d.autenticacion_actualizada_en,
+    url, expira_en = await servicios.generar_descarga(
+        ciudadano_id=actual.id, documento_id=documento_id, correlation_id=_correlation_id(request)
     )
+    return RespuestaDescarga(url=url, expira_en=expira_en)
 
 
 @router.post("/{documento_id}/autenticacion", status_code=202)
@@ -531,56 +295,11 @@ async def solicitar_autenticacion(
     documento no existe, 403 si no pertenece al ciudadano autenticado, o 409 si el
     documento ya no está vigente (fue reemplazado por una versión más reciente).
     """
-    async with SessionLocal() as session:
-        documento = await _obtener_propio(session, documento_id, actual.id)
-
-        # No tiene sentido pedirle al centralizador que autentique un documento que el
-        # propio ciudadano ya sustituyo (CU-10): _obtener_propio deja pasar un
-        # REEMPLAZADO porque sigue siendo consultable para ver su historia, pero aqui
-        # es una operacion nueva sobre el, no una lectura -- se rechaza sin importar si
-        # ya tenia un resultado guardado de antes de ser reemplazado.
-        if documento.estado != EstadoDocumento.ACTIVO:
-            raise ErrorDeNegocio("ESTADO_INVALIDO", "El documento ya no esta vigente: fue reemplazado por una version mas reciente.")
-
-        # A1: ya autenticado, no se reenvia; se muestra el resultado guardado.
-        if documento.estado_autenticacion == EstadoAutenticacionDocumento.AUTENTICADO:
-            response.status_code = 200
-            return _a_respuesta_autenticacion(documento)
-
-        # Idempotencia (seccion "Reglas de operacion"): ya hay una solicitud en curso,
-        # no se duplica la entrada de outbox.
-        if documento.estado_autenticacion == EstadoAutenticacionDocumento.PENDIENTE:
-            response.status_code = 202
-            return _a_respuesta_autenticacion(documento)
-
-        documento.estado_autenticacion = EstadoAutenticacionDocumento.PENDIENTE
-        documento.autenticacion_actualizada_en = datetime.now(timezone.utc)
-
-        session.add(
-            Outbox(
-                operacion="authenticateDocument",
-                payload={
-                    "documento_id": str(documento.id),
-                    "cedula": actual.id,
-                    "titulo": documento.titulo,
-                    "correlation_id": _correlation_id(request),
-                },
-            )
-        )
-        session.add(
-            Auditoria(
-                actor=str(actual.id),
-                accion="documento.autenticacion_solicitada",
-                recurso=str(documento.id),
-                ciudadano_id=actual.id,
-                correlation_id=_correlation_id(request),
-                detalle={},
-            )
-        )
-        await session.commit()
-
-        response.status_code = 202
-        return _a_respuesta_autenticacion(documento)
+    documento, status_code = await servicios.solicitar_autenticacion(
+        ciudadano_id=actual.id, documento_id=documento_id, correlation_id=_correlation_id(request)
+    )
+    response.status_code = status_code
+    return _a_respuesta_autenticacion(documento)
 
 
 @router.get("/{documento_id}/autenticacion", response_model=RespuestaAutenticacion)
@@ -593,6 +312,5 @@ async def consultar_autenticacion(
     y `AUTENTICADO` o `RECHAZADO` con el resultado final. Devuelve 404 si el documento
     no existe, o 403 si no pertenece al ciudadano autenticado.
     """
-    async with SessionLocal() as session:
-        documento = await _obtener_propio(session, documento_id, actual.id)
-        return _a_respuesta_autenticacion(documento)
+    documento = await servicios.consultar_autenticacion(ciudadano_id=actual.id, documento_id=documento_id)
+    return _a_respuesta_autenticacion(documento)

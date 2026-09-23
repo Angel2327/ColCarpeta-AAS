@@ -1,0 +1,87 @@
+{% import "_macros.html" as m %}
+{% extends "base.html" %}
+{% block titulo %}{{ doc.titulo }}{% endblock %}
+{% block contenido %}
+<p><a href="/portal/carpeta">« Volver a mi carpeta</a></p>
+<h1>{{ doc.titulo }}</h1>
+
+{% if error %}
+<p class="aviso aviso--error" role="alert">{{ error }}</p>
+{% endif %}
+
+{% if doc.estado.value == "REEMPLAZADO" %}
+<p class="aviso aviso--atencion" role="status">Este documento ya no esta vigente: fue reemplazado por una version mas reciente. Se conserva aqui solo como historial.</p>
+{% endif %}
+
+<div class="tarjeta">
+  <div>
+    {{ m.etiqueta_procedencia(doc) }}
+    {{ m.etiqueta_firma(doc) }}
+  </div>
+  {{ m.nota_procedencia(doc) }}
+
+  <dl class="detalle">
+    <dt>Tipo</dt>
+    <dd>{{ doc.tipo }}</dd>
+
+    {% if doc.entidad_emisora %}
+    <dt>Entidad emisora</dt>
+    <dd>{{ doc.entidad_emisora }}</dd>
+    {% endif %}
+
+    {% if doc.fecha_emision %}
+    <dt>Fecha de emision</dt>
+    <dd>{{ doc.fecha_emision.strftime("%d/%m/%Y") }}</dd>
+    {% endif %}
+
+    <dt>Cargado el</dt>
+    <dd>{{ doc.creado_en.strftime("%d/%m/%Y %H:%M") }}</dd>
+
+    {% if doc.firma_valida is not none %}
+    <dt>Firma digital</dt>
+    <dd>
+      {% if doc.firma_valida %}
+        Se verifico que el documento no cambio desde que se firmo.
+      {% else %}
+        Se reviso la firma digital y no es valida: el documento pudo cambiar despues de firmarse, o la firma esta mal formada.
+      {% endif %}
+      {% if doc.firma_firmante %}<br>Firmante declarado: {{ doc.firma_firmante }}{% endif %}
+      {% if doc.firma_fecha %}<br>Fecha de la firma: {{ doc.firma_fecha.strftime("%d/%m/%Y %H:%M") }}{% endif %}
+    </dd>
+    {% endif %}
+  </dl>
+
+  <div class="acciones">
+    <a class="boton" href="/portal/documentos/{{ doc.id }}/descarga">Descargar</a>
+    {% if not doc.certificado and doc.estado.value == "ACTIVO" %}
+    <form method="post" action="/portal/documentos/{{ doc.id }}/eliminar">
+      <button type="submit" class="boton boton--peligro">Eliminar</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+<section class="tarjeta" aria-labelledby="titulo-auth">
+  <h2 id="titulo-auth">Autenticacion ante GovCarpeta</h2>
+
+  {% if doc.estado_autenticacion.value == "NO_SOLICITADA" %}
+    <p>Todavia no has pedido autenticar este documento ante el sistema nacional GovCarpeta.</p>
+    {% if doc.estado.value == "ACTIVO" %}
+    <form method="post" action="/portal/documentos/{{ doc.id }}/autenticacion">
+      <button type="submit">Solicitar autenticacion</button>
+    </form>
+    {% endif %}
+  {% elif doc.estado_autenticacion.value == "PENDIENTE" %}
+    <p class="aviso aviso--atencion" role="status">Tu solicitud esta en proceso. Vuelve a esta pagina en unos minutos para ver el resultado.</p>
+  {% elif doc.estado_autenticacion.value == "AUTENTICADO" %}
+    <p class="aviso aviso--exito" role="status">Este documento quedo autenticado ante GovCarpeta.</p>
+  {% elif doc.estado_autenticacion.value == "RECHAZADO" %}
+    <p class="aviso aviso--error" role="status">GovCarpeta rechazo la autenticacion de este documento.</p>
+    {% if doc.estado.value == "ACTIVO" %}
+    <form method="post" action="/portal/documentos/{{ doc.id }}/autenticacion">
+      <button type="submit">Intentar de nuevo</button>
+    </form>
+    {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,28 @@
+{# Como se muestra un documento: en lenguaje de persona, nunca de sistema (ver el
+   propio pedido de la tarea). "certificado" y "firma_valida" son dos senales
+   independientes del backend -- estas dos macros son la unica decision de presentacion
+   sobre como combinarlas, y viven aqui para no repetirla entre la lista y el detalle. #}
+
+{% macro etiqueta_procedencia(doc) %}
+  {% if doc.certificado %}
+  <span class="etiqueta etiqueta--certificado">Certificado</span>
+  {% else %}
+  <span class="etiqueta etiqueta--temporal">Temporal</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro nota_procedencia(doc) %}
+  {% if not doc.certificado %}
+  <span class="nota-pequena">Informacion proporcionada por ti.</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro etiqueta_firma(doc) %}
+  {% if doc.firma_valida is none %}
+  <span class="etiqueta etiqueta--firma-ausente">Sin firma digital</span>
+  {% elif doc.firma_valida %}
+  <span class="etiqueta etiqueta--firma-valida">Firma digital valida</span>
+  {% else %}
+  <span class="etiqueta etiqueta--firma-invalida">Firma digital invalida</span>
+  {% endif %}
+{% endmacro %}

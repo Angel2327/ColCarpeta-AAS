@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block titulo %}Mi carpeta{% endblock %}
+{% block contenido %}
+<h1>Mi carpeta</h1>
+
+{% if error %}
+<p class="aviso aviso--error" role="alert">{{ error }}</p>
+{% endif %}
+
+<section class="tarjeta" aria-labelledby="titulo-subir">
+  <h2 id="titulo-subir">Subir un documento</h2>
+  {% if error_carga %}
+  <p class="aviso aviso--error" role="alert">{{ error_carga }}</p>
+  {% endif %}
+  <form method="post" action="/portal/carpeta/documentos" enctype="multipart/form-data" novalidate>
+    <div class="campo">
+      <label for="archivo">Archivo (PDF, JPG o PNG)</label>
+      <input type="file" id="archivo" name="archivo" accept=".pdf,.jpg,.jpeg,.png" required>
+    </div>
+    <div class="campo">
+      <label for="titulo">Titulo</label>
+      <input type="text" id="titulo" name="titulo" required value="{{ valores_carga.titulo if valores_carga else '' }}">
+    </div>
+    <div class="campo">
+      <label for="tipo">Tipo de documento</label>
+      <input type="text" id="tipo" name="tipo" required placeholder="Ej: cedula, certificado, recibo" value="{{ valores_carga.tipo if valores_carga else '' }}">
+    </div>
+    <div class="campo">
+      <label for="entidad_emisora">Entidad emisora (opcional)</label>
+      <input type="text" id="entidad_emisora" name="entidad_emisora" value="{{ valores_carga.entidad_emisora if valores_carga else '' }}">
+    </div>
+    <div class="campo">
+      <label for="fecha_emision">Fecha de emision (opcional)</label>
+      <input type="date" id="fecha_emision" name="fecha_emision" value="{{ valores_carga.fecha_emision if valores_carga else '' }}">
+    </div>
+    <button type="submit">Subir documento</button>
+    <span class="ayuda">Si el archivo trae una firma digital, la revisamos en segundo plano: puedes seguir usando tu carpeta mientras tanto.</span>
+  </form>
+</section>
+
+<section aria-labelledby="titulo-filtros">
+  <h2 id="titulo-filtros">Buscar en mis documentos</h2>
+  <form method="get" action="/portal/carpeta" class="filtros">
+    <div class="campo">
+      <label for="q">Titulo contiene</label>
+      <input type="text" id="q" name="q" value="{{ filtros.q or '' }}">
+    </div>
+    <div class="campo">
+      <label for="tipo_f">Tipo</label>
+      <input type="text" id="tipo_f" name="tipo" value="{{ filtros.tipo or '' }}">
+    </div>
+    <div class="campo">
+      <label for="entidad_f">Entidad emisora</label>
+      <input type="text" id="entidad_f" name="entidad" value="{{ filtros.entidad or '' }}">
+    </div>
+    <div class="campo">
+      <label for="certificado_f">Procedencia</label>
+      <select id="certificado_f" name="certificado">
+        <option value="" {{ "selected" if filtros.certificado is none else "" }}>Cualquiera</option>
+        <option value="true" {{ "selected" if filtros.certificado == True else "" }}>Certificado</option>
+        <option value="false" {{ "selected" if filtros.certificado == False else "" }}>Temporal</option>
+      </select>
+    </div>
+    <div class="campo">
+      <label for="desde_f">Emitido desde</label>
+      <input type="date" id="desde_f" name="desde" value="{{ filtros.desde or '' }}">
+    </div>
+    <div class="campo">
+      <label for="hasta_f">Emitido hasta</label>
+      <input type="date" id="hasta_f" name="hasta" value="{{ filtros.hasta or '' }}">
+    </div>
+    <div class="campo" style="grid-column: 1 / -1;">
+      <button type="submit" class="boton--secundario boton">Filtrar</button>
+      <a class="boton boton--secundario" href="/portal/carpeta">Limpiar filtros</a>
+    </div>
+  </form>
+</section>
+
+<section aria-labelledby="titulo-lista">
+  <h2 id="titulo-lista">Documentos ({{ total }})</h2>
+  {% if items %}
+  <ul class="lista-documentos">
+    {% for doc in items %}
+      {% include "_documento_fila.html" %}
+    {% endfor %}
+  </ul>
+  <nav class="paginacion" aria-label="Paginacion de documentos">
+    {% if page > 1 %}
+    <a href="{{ url_pagina(page - 1) }}">« Anterior</a>
+    {% else %}
+    <span></span>
+    {% endif %}
+    {% if (page * size) < total %}
+    <a href="{{ url_pagina(page + 1) }}">Siguiente »</a>
+    {% endif %}
+  </nav>
+  {% else %}
+  <p class="vacio">Todavia no tienes documentos {{ "que coincidan con estos filtros" if hay_filtros else "en tu carpeta" }}.</p>
+  {% endif %}
+</section>
+{% endblock %}
