@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block titulo %}Notificaciones{% endblock %}
+{% block main_extra_class %}contenedor--estrecho{% endblock %}
 {% block contenido %}
 <h1>Notificaciones{% if no_leidas %} <span class="etiqueta etiqueta--atencion">{{ no_leidas }} sin leer</span>{% endif %}</h1>
 

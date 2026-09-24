@@ -11,6 +11,8 @@ el centralizador (`govcarpeta.py`): solo lee `operador_cache`, que otro proceso
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from sqlalchemy import select
 
 from app.config import get_config
@@ -19,21 +21,64 @@ from app.errors import ErrorDeNegocio
 from app.models import Auditoria, Ciudadano, EstadoCiudadano, EstadoTransferencia, OperadorCache, Outbox, Transferencia
 
 
+def url_transferencia_utilizable(url: str | None, *, exigir_https: bool) -> bool:
+    """Unica funcion que decide si un `transfer_api_url` del directorio sirve de
+    verdad -- la usan por igual el desplegable del portal (`listar_operadores_
+    transferibles`), la ruta que recibe la solicitud (`solicitar_traslado`) y el
+    envio real en segundo plano (`app.interoperabilidad.outbox._enviar_transferencia`),
+    para que nunca se desincronicen en tres copias del mismo chequeo.
+
+    El directorio del MinTIC es dato sucio (CLAUDE.md, "trampa 5"): trae URLs sin TLS,
+    con espacios, y algunas que ni siquiera apuntan a un host real
+    (`http://0.0.0.0:8000`, dominios sueltos sin punto). Bien formada y con el esquema
+    que exige la configuracion siempre; el chequeo de host "publico" (nada de
+    localhost, 0.0.0.0, 127.x, o un host sin punto) solo se aplica cuando
+    `exigir_https` esta prendido -- la misma bandera que ya marca "estamos contra el
+    directorio real", nunca un entorno de prueba local. Con `exigir_https=False`
+    (docker-compose.test.yml, instancias propias sin TLS) los nombres de servicio de
+    Docker (`app-b`, sin punto) son exactamente lo que se espera, no dato sucio."""
+    if not url:
+        return False
+    try:
+        partes = urlparse(url.strip())
+    except ValueError:
+        return False
+    esquemas_validos = {"https"} if exigir_https else {"http", "https"}
+    if partes.scheme not in esquemas_validos:
+        return False
+    host = (partes.hostname or "").lower()
+    if not host:
+        return False
+    if exigir_https and (host in ("localhost", "0.0.0.0") or host.startswith("127.") or "." not in host):
+        return False
+    return True
+
+
 async def listar_operadores_transferibles() -> list[OperadorCache]:
-    """Operadores del directorio que publican un endpoint de transferencia utilizable
-    (con `transfer_api_url`, y `https://` si `TRANSFERENCIA_EXIGIR_HTTPS` lo exige) --
-    de los ~73 operadores del directorio real, solo una fracción publica uno (CLAUDE.md,
-    "trampa 5"). Ordenados por nombre para que la lista sea navegable."""
+    """Operadores del directorio que publican un endpoint de transferencia realmente
+    utilizable -- de los ~73 operadores del directorio real, solo una fracción publica
+    uno (CLAUDE.md, "trampa 5"), y de esos varios apuntan a direcciones que nunca
+    responderían (`0.0.0.0`, dominios sin punto, URLs sin TLS). Mismo filtro que usa
+    el envío real (`url_transferencia_utilizable`), nunca una copia -- así el
+    desplegable nunca ofrece un destino que el envío rechazaría de entrada.
+
+    Encima de ese filtro, descarta también los `_id` en `OPERADORES_EXCLUIDOS`
+    (docs/especificacion.md, "Directorio de operadores"): una decisión de operación
+    propia sobre qué le ofrecemos al ciudadano, nunca una corrección del directorio
+    -- por `_id`, nunca por `nombre` (el directorio trae nombres duplicados).
+
+    Ordenados por nombre para que la lista sea navegable."""
     cfg = get_config()
     async with SessionLocal() as session:
-        resultado = await session.execute(
-            select(OperadorCache).where(OperadorCache.transfer_api_url.is_not(None)).order_by(OperadorCache.nombre)
-        )
+        resultado = await session.execute(select(OperadorCache).order_by(OperadorCache.nombre))
         operadores = list(resultado.scalars().all())
 
-    if cfg.transferencia_exigir_https:
-        operadores = [o for o in operadores if o.transfer_api_url and o.transfer_api_url.startswith("https://")]
-    return operadores
+    excluidos = cfg.operadores_excluidos_ids
+    return [
+        o
+        for o in operadores
+        if o.id not in excluidos and url_transferencia_utilizable(o.transfer_api_url, exigir_https=cfg.transferencia_exigir_https)
+    ]
 
 
 async def solicitar_traslado(*, ciudadano_id: int, operador_destino_id: str, correlation_id: str | None) -> EstadoCiudadano:
@@ -57,8 +102,8 @@ async def solicitar_traslado(*, ciudadano_id: int, operador_destino_id: str, cor
             raise ErrorDeNegocio("TRASLADO_EN_CURSO", "Ya hay un traslado en curso para tu cédula.")
 
         operador = await session.get(OperadorCache, operador_destino_id)
-        url_valida = operador is not None and operador.transfer_api_url and (
-            operador.transfer_api_url.startswith("https://") or not get_config().transferencia_exigir_https
+        url_valida = operador is not None and url_transferencia_utilizable(
+            operador.transfer_api_url, exigir_https=get_config().transferencia_exigir_https
         )
         if not url_valida:
             raise ErrorDeNegocio(

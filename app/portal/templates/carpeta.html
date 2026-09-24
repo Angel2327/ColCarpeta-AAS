@@ -1,101 +1,100 @@
 {% extends "base.html" %}
 {% block titulo %}Mi carpeta{% endblock %}
 {% block contenido %}
-<h1>Mi carpeta</h1>
+<div class="carpeta-cabecera">
+  <h1>Mi carpeta</h1>
+  <a class="boton" href="/carpeta/subir">Subir documento</a>
+</div>
 
 {% if error %}
 <p class="aviso aviso--error" role="alert">{{ error }}</p>
 {% endif %}
 
-<section class="tarjeta" aria-labelledby="titulo-subir">
-  <h2 id="titulo-subir">Subir un documento</h2>
-  {% if error_carga %}
-  <p class="aviso aviso--error" role="alert">{{ error_carga }}</p>
-  {% endif %}
-  <form method="post" action="/carpeta/documentos" enctype="multipart/form-data" novalidate>
-    <div class="campo">
-      <label for="archivo">Archivo (PDF, JPG o PNG)</label>
-      <input type="file" id="archivo" name="archivo" accept=".pdf,.jpg,.jpeg,.png" required>
-    </div>
-    <div class="campo">
-      <label for="titulo">Título</label>
-      <input type="text" id="titulo" name="titulo" required value="{{ valores_carga.titulo if valores_carga else '' }}">
-    </div>
-    <div class="campo">
-      <label for="tipo">Tipo de documento</label>
-      <input type="text" id="tipo" name="tipo" required placeholder="Ej: cédula, certificado, recibo" value="{{ valores_carga.tipo if valores_carga else '' }}">
-    </div>
-    <div class="campo">
-      <label for="entidad_emisora">Entidad emisora (opcional)</label>
-      <input type="text" id="entidad_emisora" name="entidad_emisora" value="{{ valores_carga.entidad_emisora if valores_carga else '' }}">
-    </div>
-    <div class="campo">
-      <label for="fecha_emision">Fecha de emisión (opcional)</label>
-      <input type="date" id="fecha_emision" name="fecha_emision" value="{{ valores_carga.fecha_emision if valores_carga else '' }}">
-    </div>
-    <button type="submit">Subir documento</button>
-    <span class="ayuda">Si el archivo trae una firma digital, la revisamos en segundo plano: puedes seguir usando tu carpeta mientras tanto.</span>
-  </form>
-</section>
+<div class="carpeta-diseno">
+  <div class="carpeta-principal">
+    <section aria-labelledby="titulo-filtros">
+      <h2 id="titulo-filtros">Buscar en mis documentos</h2>
+      <form method="get" action="/carpeta">
+        <div class="filtros">
+          <div class="campo">
+            <label for="q">Título contiene</label>
+            <input type="text" id="q" name="q" value="{{ filtros.q or '' }}">
+          </div>
+          <div class="campo">
+            <label for="tipo_f">Tipo</label>
+            <input type="text" id="tipo_f" name="tipo" value="{{ filtros.tipo or '' }}">
+          </div>
+        </div>
+        <details class="filtros-avanzados"{{ ' open' if hay_filtros_avanzados else '' }}>
+          <summary>Más filtros</summary>
+          <div class="filtros">
+            <div class="campo">
+              <label for="entidad_f">Entidad emisora</label>
+              <input type="text" id="entidad_f" name="entidad" value="{{ filtros.entidad or '' }}">
+            </div>
+            <div class="campo">
+              <label for="certificado_f">Procedencia</label>
+              <select id="certificado_f" name="certificado">
+                <option value="" {{ "selected" if filtros.certificado is none else "" }}>Cualquiera</option>
+                <option value="true" {{ "selected" if filtros.certificado == True else "" }}>Certificado</option>
+                <option value="false" {{ "selected" if filtros.certificado == False else "" }}>Temporal</option>
+              </select>
+            </div>
+            <div class="campo">
+              <label for="desde_f">Emitido desde</label>
+              <input type="date" id="desde_f" name="desde" value="{{ filtros.desde or '' }}">
+            </div>
+            <div class="campo">
+              <label for="hasta_f">Emitido hasta</label>
+              <input type="date" id="hasta_f" name="hasta" value="{{ filtros.hasta or '' }}">
+            </div>
+          </div>
+        </details>
+        <div class="acciones">
+          <button type="submit" class="boton boton--secundario">Filtrar</button>
+          <a class="boton boton--secundario" href="/carpeta">Limpiar filtros</a>
+        </div>
+      </form>
+    </section>
 
-<section aria-labelledby="titulo-filtros">
-  <h2 id="titulo-filtros">Buscar en mis documentos</h2>
-  <form method="get" action="/carpeta" class="filtros">
-    <div class="campo">
-      <label for="q">Título contiene</label>
-      <input type="text" id="q" name="q" value="{{ filtros.q or '' }}">
-    </div>
-    <div class="campo">
-      <label for="tipo_f">Tipo</label>
-      <input type="text" id="tipo_f" name="tipo" value="{{ filtros.tipo or '' }}">
-    </div>
-    <div class="campo">
-      <label for="entidad_f">Entidad emisora</label>
-      <input type="text" id="entidad_f" name="entidad" value="{{ filtros.entidad or '' }}">
-    </div>
-    <div class="campo">
-      <label for="certificado_f">Procedencia</label>
-      <select id="certificado_f" name="certificado">
-        <option value="" {{ "selected" if filtros.certificado is none else "" }}>Cualquiera</option>
-        <option value="true" {{ "selected" if filtros.certificado == True else "" }}>Certificado</option>
-        <option value="false" {{ "selected" if filtros.certificado == False else "" }}>Temporal</option>
-      </select>
-    </div>
-    <div class="campo">
-      <label for="desde_f">Emitido desde</label>
-      <input type="date" id="desde_f" name="desde" value="{{ filtros.desde or '' }}">
-    </div>
-    <div class="campo">
-      <label for="hasta_f">Emitido hasta</label>
-      <input type="date" id="hasta_f" name="hasta" value="{{ filtros.hasta or '' }}">
-    </div>
-    <div class="campo" style="grid-column: 1 / -1;">
-      <button type="submit" class="boton--secundario boton">Filtrar</button>
-      <a class="boton boton--secundario" href="/carpeta">Limpiar filtros</a>
-    </div>
-  </form>
-</section>
+    <section aria-labelledby="titulo-lista">
+      <h2 id="titulo-lista">Documentos ({{ total }})</h2>
+      {% if items %}
+      <ul class="lista-documentos">
+        {% for doc in items %}
+          {% include "_documento_fila.html" %}
+        {% endfor %}
+      </ul>
+      <nav class="paginacion" aria-label="Paginación de documentos">
+        {% if page > 1 %}
+        <a href="{{ url_pagina(page - 1) }}">« Anterior</a>
+        {% else %}
+        <span></span>
+        {% endif %}
+        {% if (page * size) < total %}
+        <a href="{{ url_pagina(page + 1) }}">Siguiente »</a>
+        {% endif %}
+      </nav>
+      {% else %}
+      <p class="vacio">Todavía no tienes documentos {{ "que coincidan con estos filtros" if hay_filtros else "en tu carpeta" }}.</p>
+      {% endif %}
+    </section>
+  </div>
 
-<section aria-labelledby="titulo-lista">
-  <h2 id="titulo-lista">Documentos ({{ total }})</h2>
-  {% if items %}
-  <ul class="lista-documentos">
-    {% for doc in items %}
-      {% include "_documento_fila.html" %}
-    {% endfor %}
-  </ul>
-  <nav class="paginacion" aria-label="Paginación de documentos">
-    {% if page > 1 %}
-    <a href="{{ url_pagina(page - 1) }}">« Anterior</a>
-    {% else %}
-    <span></span>
-    {% endif %}
-    {% if (page * size) < total %}
-    <a href="{{ url_pagina(page + 1) }}">Siguiente »</a>
-    {% endif %}
-  </nav>
-  {% else %}
-  <p class="vacio">Todavía no tienes documentos {{ "que coincidan con estos filtros" if hay_filtros else "en tu carpeta" }}.</p>
-  {% endif %}
-</section>
+  <aside class="carpeta-cuota" aria-labelledby="titulo-cuota">
+    <div class="tarjeta">
+      <h2 id="titulo-cuota">Espacio usado</h2>
+      {% set porcentaje = (100 * usado_bytes / cuota_bytes) if cuota_bytes else 0 %}
+      <div class="barra-cuota" role="progressbar" aria-valuenow="{{ porcentaje | round(0, 'floor') }}" aria-valuemin="0" aria-valuemax="100">
+        <div class="barra-cuota__relleno{{ ' barra-cuota__relleno--llena' if porcentaje >= 90 else '' }}" style="width: {{ [porcentaje, 100] | min }}%"></div>
+      </div>
+      <p class="nota-pequena">{{ (usado_bytes / 1048576) | round(1) }} MB de {{ (cuota_bytes / 1048576) | round(0) }} MB usados. Los documentos certificados por una entidad no ocupan espacio.</p>
+    </div>
+    <div class="tarjeta">
+      <h2>Operador actual</h2>
+      <p>Tu carpeta ciudadana vive en <strong>{{ operador_actual }}</strong>.</p>
+      <a class="boton boton--secundario" href="/perfil/traslado">Trasladar mi carpeta</a>
+    </div>
+  </aside>
+</div>
 {% endblock %}

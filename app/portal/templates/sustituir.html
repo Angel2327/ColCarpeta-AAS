@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block titulo %}Sustituir documento{% endblock %}
+{% block main_extra_class %}contenedor--estrecho{% endblock %}
 {% block contenido %}
 <p><a href="/documentos/{{ doc.id }}">« Volver al documento</a></p>
 <h1>Sustituir «{{ doc.titulo }}»</h1>
@@ -31,8 +32,8 @@
       <label for="fecha_emision">Fecha de emisión (opcional)</label>
       <input type="date" id="fecha_emision" name="fecha_emision" value="{{ valores.fecha_emision if valores else (doc.fecha_emision.strftime('%Y-%m-%d') if doc.fecha_emision else '') }}">
     </div>
+    <p class="ayuda ayuda--previa">Si el archivo nuevo trae una firma digital, la revisamos en segundo plano: puedes seguir usando tu carpeta mientras tanto.</p>
     <button type="submit">Sustituir documento</button>
-    <span class="ayuda">Si el archivo nuevo trae una firma digital, la revisamos en segundo plano: puedes seguir usando tu carpeta mientras tanto.</span>
   </form>
 </div>
 {% endblock %}

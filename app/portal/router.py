@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -32,6 +32,7 @@ from pydantic import ValidationError
 from app.config import get_config
 from app.documentos import servicios as documentos_servicios
 from app.errors import ErrorDeNegocio
+from app.identidad import perfil_servicios
 from app.identidad.servicios import RespuestaSesion, SolicitudRegistro, SolicitudSesion, cerrar_sesion, iniciar_sesion, registrar_ciudadano
 from app.portal.auth import borrar_cookie_sesion, ciudadano_actual_portal, fijar_cookie_sesion
 
@@ -43,6 +44,24 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 # no algo que cada ruta tenga que pasar en su contexto -- base.html lo usa en toda
 # pantalla autenticada, y no cambia entre peticiones dentro del mismo proceso.
 templates.env.globals["notificaciones_contador_intervalo_segundos"] = get_config().notificaciones_contador_intervalo_segundos
+
+
+def _es_seccion_activa(request: Request, *prefijos: str) -> bool:
+    """Para `aria-current="page"` en la navegacion del encabezado: la ruta actual
+    pertenece a una seccion si coincide con alguno de sus prefijos, o con algo debajo
+    (p. ej. /documentos/{id} sigue siendo "Mi carpeta"). Global de Jinja, no un
+    dato que cada ruta tenga que calcular y pasar en su contexto.
+
+    El contador de notificaciones se sirve por su propia peticion HTMX
+    (`GET /notificaciones/contador`), cuya URL nunca es la pagina que el ciudadano
+    esta viendo -- para ese caso se usa `HX-Current-Url` (la URL real del navegador,
+    que HTMX manda siempre) en vez de `request.url.path`."""
+    url_actual = request.headers.get("hx-current-url")
+    ruta = urlparse(url_actual).path if url_actual else request.url.path
+    return any(ruta == prefijo or ruta.startswith(prefijo + "/") for prefijo in prefijos)
+
+
+templates.env.globals["activa"] = _es_seccion_activa
 
 
 def _origen(request: Request) -> str:
@@ -235,8 +254,10 @@ async def carpeta(request: Request) -> HTMLResponse:
         page=page,
         size=size,
     )
+    _, cuota_bytes, usado_bytes = await perfil_servicios.obtener_perfil(ciudadano_id=ciudadano.id)
 
     hay_filtros = any(filtros.values())
+    hay_filtros_avanzados = any([filtros["entidad"], filtros["certificado"] is not None, filtros["desde"], filtros["hasta"]])
     contexto = {
         "ciudadano": ciudadano,
         "items": items,
@@ -245,7 +266,11 @@ async def carpeta(request: Request) -> HTMLResponse:
         "size": size,
         "filtros": filtros,
         "hay_filtros": hay_filtros,
+        "hay_filtros_avanzados": hay_filtros_avanzados,
         "url_pagina": _url_pagina_factory(filtros, size),
+        "cuota_bytes": cuota_bytes,
+        "usado_bytes": usado_bytes,
+        "operador_actual": get_config().operator_name,
     }
     if request.query_params.get("subido"):
         contexto["mensaje_exito"] = "El documento se subió correctamente."
@@ -254,6 +279,14 @@ async def carpeta(request: Request) -> HTMLResponse:
     if request.query_params.get("error"):
         contexto["error"] = request.query_params["error"]
     return templates.TemplateResponse(request, "carpeta.html", contexto)
+
+
+@router.get("/carpeta/subir", response_class=HTMLResponse)
+async def form_subir_documento(request: Request) -> HTMLResponse:
+    ciudadano = await ciudadano_actual_portal(request)
+    if ciudadano is None:
+        return RedirectResponse("/sesion", status_code=303)
+    return templates.TemplateResponse(request, "carpeta_subir.html", {"ciudadano": ciudadano})
 
 
 @router.post("/carpeta/documentos", response_class=HTMLResponse)
@@ -282,33 +315,13 @@ async def subir_documento(
             correlation_id=_correlation_id(request),
         )
     except ErrorDeNegocio as exc:
-        filtros = _filtros_desde_query(request)
-        items, total, page, size = await documentos_servicios.listar_documentos(
-            ciudadano_id=ciudadano.id,
-            tipo=None,
-            entidad=None,
-            desde=None,
-            hasta=None,
-            certificado=None,
-            estado_autenticacion=None,
-            q=None,
-            page=1,
-            size=documentos_servicios.TAMANO_PAGINA_DEFECTO,
-        )
         return templates.TemplateResponse(
             request,
-            "carpeta.html",
+            "carpeta_subir.html",
             {
                 "ciudadano": ciudadano,
-                "items": items,
-                "total": total,
-                "page": page,
-                "size": size,
-                "filtros": filtros,
-                "hay_filtros": False,
-                "url_pagina": _url_pagina_factory(filtros, size),
-                "error_carga": exc.mensaje,
-                "valores_carga": {"titulo": titulo, "tipo": tipo, "entidad_emisora": entidad_emisora, "fecha_emision": fecha_emision},
+                "error": exc.mensaje,
+                "valores": {"titulo": titulo, "tipo": tipo, "entidad_emisora": entidad_emisora, "fecha_emision": fecha_emision},
             },
             status_code=200,
         )

@@ -73,6 +73,15 @@ class Config(BaseSettings):
     # hablan por HTTP simple dentro de una red Docker aislada (sin TLS entre
     # contenedores) -- nunca se debe apagar en produccion ni en un .env real.
     transferencia_exigir_https: bool = True
+    # Operadores del directorio que decidimos no ofrecer en el desplegable de traslado
+    # (ver docs/especificacion.md, "Directorio de operadores"): una decision de
+    # operacion propia, no parte del acuerdo con el MinTIC -- el directorio sigue
+    # siendo la fuente de verdad, esto solo filtra que le mostramos al ciudadano.
+    # _id separados por coma, NUNCA operatorName (el directorio tiene nombres
+    # duplicados, CLAUDE.md "trampa 5"). Variable de entorno, no una lista escrita en
+    # el codigo, para poder sacar a alguien de la lista sin redesplegar el dia que
+    # arregle su operador.
+    operadores_excluidos: str = ""
     # Vigencia del token de un solo uso con el que un ciudadano recibido por
     # transferencia establece su contrasena inicial (ver app.identidad.token_acceso).
     primer_acceso_token_ttl_horas: int = 24
@@ -104,6 +113,10 @@ class Config(BaseSettings):
         """Acepta el PEM con saltos de linea reales o con "\\n" escapado, sea cual sea
         el origen (archivo .env vs. variable de entorno de la plataforma)."""
         return valor.replace("\\n", "\n") if "\\n" in valor else valor
+
+    @property
+    def operadores_excluidos_ids(self) -> frozenset[str]:
+        return frozenset(o.strip() for o in self.operadores_excluidos.split(",") if o.strip())
 
     @property
     def sqlalchemy_url(self) -> str:

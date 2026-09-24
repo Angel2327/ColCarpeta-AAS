@@ -1,39 +1,64 @@
-/* ColCarpeta -- portal del ciudadano. Mobile-first, sin framework de CSS. */
+/* ColCarpeta -- portal del ciudadano. Mobile-first, sin framework de CSS.
+   Direccion visual: docs/diseno.md. */
 
 :root {
-  --color-texto: #1a1a2e;
-  --color-fondo: #ffffff;
-  --color-borde: #c9ccd6;
-  --color-primario: #1d4ed8;
-  --color-primario-oscuro: #1e3a8a;
-  --color-exito-fondo: #e8f7ee;
-  --color-exito-texto: #14532d;
-  --color-error-fondo: #fdecec;
-  --color-error-texto: #7f1d1d;
-  --color-atencion-fondo: #fff8e1;
-  --color-atencion-texto: #7a5b00;
-  --color-suave: #f4f5f8;
-  --color-texto-tenue: #5b5f6d;
-  --radio: 8px;
+  --color-fondo-pagina: #F7F5F0;   /* papel: fondo de la página */
+  --color-fondo: #FFFFFF;          /* superficie: tarjetas y campos */
+  --color-texto: #1B1D1A;
+  --color-texto-tenue: #55574F;
+  --color-borde: #DDD8CE;
+  --color-suave: #EDEAE2;          /* relleno sutil, ya no es el fondo de página */
+
+  --color-primario: #14425C;       /* petróleo */
+  --color-primario-oscuro: #0E2E40;
+  --color-primario-fondo: #E5EDF1;  /* azul muy suave: hover discreto de descargar/sustituir */
+
+  --color-certificado-fondo: #F4E9D6;  /* ocre: documento certificado */
+  --color-certificado-texto: #7A4E12;
+
+  --color-exito-fondo: #E2EFE4;    /* verde: solo firma verificada y confirmaciones */
+  --color-exito-texto: #1F5132;
+  --color-error-fondo: #F6E3E1;
+  --color-error-texto: #8A2020;
+  --color-atencion-fondo: #FDF6E9;
+  --color-atencion-texto: #6B4310;
+
+  --radio: 10px;
+  --radio-grande: 24px;
   --espacio: 1rem;
   font-size: 17px;
+}
+
+/* Anima la navegacion entre paginas (p. ej. iniciar sesion <-> registro) en los
+   navegadores que soportan View Transitions; en los que no, no pasa nada -- una sola
+   regla, sin JavaScript. Suaviza el salto entre las dos tarjetas de entrada aunque ya
+   no deberian tener alturas muy distintas. */
+@view-transition {
+  navigation: auto;
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: "Public Sans", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color: var(--color-texto);
-  background: var(--color-suave);
+  background: var(--color-fondo-pagina);
   line-height: 1.5;
 }
 
 .contenedor {
-  max-width: 720px;
+  max-width: 1120px;
   margin: 0 auto;
   padding: 0 var(--espacio);
 }
+
+/* Formularios y bloques de una sola columna (perfil, notificaciones, el detalle de
+   un documento...) no deben estirarse a los 1080px del contenedor: una linea de
+   prosa o un campo de texto tan anchos son incomodos de leer. La carpeta y la
+   tarjeta partida de entrada SI usan el ancho completo (tienen su propio diseño de
+   columnas), asi que no llevan este modificador. */
+.contenedor--estrecho { max-width: 640px; }
 
 .saltar-al-contenido {
   position: absolute;
@@ -69,30 +94,81 @@ a { color: var(--color-primario); }
   gap: 0.5rem;
 }
 .encabezado__marca {
-  font-weight: 700;
-  font-size: 1.15rem;
   text-decoration: none;
-  color: var(--color-texto);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
 }
 .encabezado__nav {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.75rem 1rem;
+  flex-wrap: wrap;
 }
+/* La navegacion no son enlaces de texto corrido: la posicion ya dice que son
+   enlaces, y subrayarlos todos hace que compitan entre si. */
+.encabezado__nav a {
+  text-decoration: none;
+  color: var(--color-texto-tenue);
+  font-weight: 500;
+}
+.encabezado__nav a:hover,
+.encabezado__nav a:focus-visible { text-decoration: underline; }
+
+.encabezado__nav a[aria-current="page"] {
+  color: var(--color-texto);
+  border-bottom: 2px solid var(--color-primario);
+  padding-bottom: 3px;
+}
+
+/* "Cerrar sesion" es un <button> porque hace POST (no puede ser un enlace), pero
+   debe verse identico a los demas items de la navegacion -- misma regla que arriba,
+   repetida para el elemento button en vez de a. Un <button> que se disfraza de otra
+   cosa tiene que anular TODOS sus estados, no solo el de reposo: reposo, hover, focus
+   y active -- si solo se neutraliza el reposo, la regla generica button:hover (mas
+   abajo) lo vuelve a rellenar de solido al pasar el cursor, porque especificidad y
+   orden de aparicion la hacen ganar. Ya paso una vez con este mismo boton. */
+.encabezado__nav button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  color: var(--color-texto-tenue);
+  font-weight: 500;
+}
+.encabezado__nav button:hover,
+.encabezado__nav button:focus-visible,
+.encabezado__nav button:active {
+  background: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+.encabezado__nav button:hover,
+.encabezado__nav button:focus-visible { text-decoration: underline; }
 
 main.contenedor {
   padding-top: 1.25rem;
   padding-bottom: 3rem;
 }
 
-h1 { font-size: 1.5rem; margin: 0 0 1rem; }
-h2 { font-size: 1.15rem; margin: 1.75rem 0 0.75rem; }
+h1, h2, .encabezado__marca {
+  font-family: "Source Serif 4", Georgia, serif;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+h1 { font-size: 2rem; margin: 0 0 0.75rem; }
+h2 { font-size: 1.25rem; margin: 1.75rem 0 0.75rem; }
+
+.encabezado__marca { color: var(--color-primario); font-size: 1.3rem; }
 
 .tarjeta {
   background: var(--color-fondo);
   border: 1px solid var(--color-borde);
   border-radius: var(--radio);
-  padding: 1.25rem;
+  padding: 1.35rem 1.5rem;
   margin-bottom: 1.25rem;
 }
 
@@ -102,18 +178,35 @@ form { margin: 0; }
 
 .campo { margin-bottom: 1rem; }
 
+/* Dos campos por fila (cedula+nombre, direccion+telefono en el registro): una lista
+   de seis campos en una sola columna hace que la tarjeta de registro quede mucho mas
+   alta que la de iniciar sesion y el salto entre las dos se sienta brusco. Una sola
+   columna por debajo de 480px: a ese ancho, dos campos de cedula/telefono lado a lado
+   quedarian demasiado angostos para escribir con comodidad. */
+.campos-doble { display: grid; grid-template-columns: 1fr; gap: 0 1rem; }
+@media (min-width: 480px) {
+  .campos-doble { grid-template-columns: 1fr 1fr; }
+}
+
 .campo label {
   display: block;
   font-weight: 600;
   margin-bottom: 0.3rem;
 }
 
-.campo .ayuda {
+/* Siempre en su propio renglon, sin importar si esta dentro de un .campo o suelto
+   junto a un boton (subir, sustituir): es un parrafo de ayuda, no algo que deba
+   acompañar a otro elemento en la misma linea. */
+.ayuda {
   display: block;
   font-size: 0.85rem;
   color: var(--color-texto-tenue);
   margin-top: 0.25rem;
 }
+/* La ayuda que explica que va a pasar despues de enviar un formulario (subir,
+   sustituir) va ENCIMA del boton, en su propio parrafo, nunca al lado -- y con aire
+   de sobra antes del boton, no solo separada de la linea anterior. */
+.ayuda--previa { margin: 0.25rem 0 1rem; }
 
 input[type="text"],
 input[type="email"],
@@ -123,24 +216,35 @@ input[type="date"],
 input[type="file"],
 select {
   width: 100%;
-  padding: 0.65rem 0.75rem;
+  padding: 0.8rem 0.9rem;
   border: 1px solid var(--color-borde);
   border-radius: var(--radio);
   font-size: 1rem;
-  background: var(--color-fondo);
+  background: #FBFAF7;
   color: var(--color-texto);
 }
 
-input:invalid,
+input:user-invalid,
 .campo--error input {
   border-color: var(--color-error-texto);
+}
+
+/* Un dato permanente (cedula, direccion de carpeta) se muestra en un campo como
+   cualquier otro, pero apagado: readonly, nunca disabled -- disabled saca el campo
+   del tabulado y no deja seleccionar ni copiar el valor, que es justo lo que alguien
+   quiere hacer con su direccion de carpeta. */
+input[readonly] {
+  background: var(--color-suave);
+  color: var(--color-texto-tenue);
+  cursor: default;
 }
 
 button, .boton {
   display: inline-block;
   font-size: 1rem;
   font-weight: 600;
-  padding: 0.65rem 1.25rem;
+  padding: 0.8rem 1.25rem;
+  min-height: 44px;
   border-radius: var(--radio);
   border: 1px solid var(--color-primario);
   background: var(--color-primario);
@@ -148,6 +252,7 @@ button, .boton {
   cursor: pointer;
   text-decoration: none;
   text-align: center;
+  letter-spacing: 0.02em;
 }
 button:hover, .boton:hover { background: var(--color-primario-oscuro); }
 button:disabled { opacity: 0.6; cursor: not-allowed; }
@@ -164,14 +269,66 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 }
 .boton--peligro:hover { background: #5c1414; }
 
+/* Varias acciones dentro de un mismo grupo (descargar/sustituir/eliminar un
+   documento) comparten geometria -- mismo alto, relleno, radio y borde, heredados
+   de .boton -- y se diferencian solo por color: .boton--secundario ya es la
+   habitual (primario); estas dos cubren la secundaria neutra y la destructiva, para
+   que ningun grupo mezcle una caja con borde junto a texto suelto. boton--peligro
+   (arriba) se queda solido para una accion sola y grave (trasladarse, deshabilitar
+   el segundo factor); esta variante discreta es para cuando eliminar convive con
+   otras acciones del mismo peso. */
+.boton--neutro {
+  background: transparent;
+  color: var(--color-texto-tenue);
+  border-color: var(--color-borde);
+}
+.boton--neutro:hover { background: var(--color-suave); border-color: var(--color-texto-tenue); }
+
+.boton--peligro-discreto {
+  background: transparent;
+  color: var(--color-error-texto);
+  border-color: var(--color-error-texto);
+}
+.boton--peligro-discreto:hover { background: var(--color-error-fondo); }
+
+/* Descargar y sustituir no avisaban de que eran pulsables: texto suelto, sin ningun
+   cambio al pasar el cursor. Mismo tratamiento discreto que ya tiene eliminar (mas
+   abajo), pero en azul: fondo muy suave y borde del color primario, y no solo en
+   :hover -- tambien en :focus-visible, para que quien navega con teclado vea la misma
+   señal que quien usa el raton. El borde va transparente en reposo (no `none`) para
+   que aparecer en el hover no mueva nada alrededor. */
 .boton-enlace {
   background: none;
-  border: none;
+  border: 1px solid transparent;
   color: var(--color-primario);
   text-decoration: underline;
-  padding: 0;
+  padding: 0.3rem 0.5rem;
+  border-radius: 6px;
   font: inherit;
   cursor: pointer;
+}
+.boton-enlace:hover,
+.boton-enlace:focus-visible,
+.boton-enlace:active {
+  background: var(--color-primario-fondo);
+  border-color: var(--color-primario);
+}
+
+/* Eliminar es irreversible pero, entre las acciones de un documento, ocasional:
+   rojo para que se distinga, sin el peso de un boton solido que "grite". Se le da
+   su propio hover (mas especifico que la regla generica button:hover, que rellenaria
+   con el petroleo oscuro): un rojo muy suave, nunca solido -- discreto incluso al
+   pasar el cursor. Gana sobre el hover azul de .boton-enlace por aparecer despues en
+   este archivo, a igual especificidad. */
+.boton-enlace--peligro {
+  color: var(--color-error-texto);
+}
+.boton-enlace--peligro:hover,
+.boton-enlace--peligro:focus-visible,
+.boton-enlace--peligro:active {
+  background: var(--color-error-fondo);
+  border-color: transparent;
+  color: var(--color-error-texto);
 }
 
 .acciones { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
@@ -189,20 +346,25 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .aviso--atencion { background: var(--color-atencion-fondo); color: var(--color-atencion-texto); }
 
 /* --- etiquetas de procedencia y estado ------------------------------------ */
+/* Rectangulos en versalitas, no pildoras: certificado (ocre) y firma valida
+   (verde) comparten aviso pero no color, para no confundir dos senales
+   independientes del backend (documento.certificado y documento.firma_valida). */
 
 .etiqueta {
   display: inline-block;
-  font-size: 0.8rem;
-  font-weight: 600;
-  padding: 0.2rem 0.6rem;
-  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  padding: 0.22rem 0.55rem;
+  border-radius: 5px;
   white-space: nowrap;
 }
-.etiqueta--certificado { background: var(--color-exito-fondo); color: var(--color-exito-texto); }
-.etiqueta--temporal { background: var(--color-suave); color: var(--color-texto-tenue); border: 1px solid var(--color-borde); }
+.etiqueta--certificado { background: var(--color-certificado-fondo); color: var(--color-certificado-texto); }
+.etiqueta--temporal { background: var(--color-suave); color: #4A4C45; border: none; }
 .etiqueta--firma-valida { background: var(--color-exito-fondo); color: var(--color-exito-texto); }
 .etiqueta--firma-invalida { background: var(--color-error-fondo); color: var(--color-error-texto); }
-.etiqueta--firma-ausente { background: var(--color-suave); color: var(--color-texto-tenue); border: 1px solid var(--color-borde); }
+.etiqueta--firma-ausente { background: var(--color-suave); color: var(--color-texto-tenue); border: none; }
 .etiqueta--atencion { background: var(--color-atencion-fondo); color: var(--color-atencion-texto); }
 
 .nota-pequena {
@@ -214,6 +376,36 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* --- lista de documentos --------------------------------------------------- */
 
+.carpeta-cabecera {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+}
+.carpeta-cabecera h1 { margin: 0; }
+
+/* Columna derecha para la cuota: solo cabe a partir de 1000px (contenedor de
+   1080px menos el ancho de la tarjeta lateral y su espacio). Por debajo de eso, un
+   solo renglon: la tarjeta de cuota queda debajo de la lista, en el orden en que
+   aparece en el documento. */
+.carpeta-diseno {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+@media (min-width: 1000px) {
+  .carpeta-diseno { grid-template-columns: 1fr 300px; }
+}
+.carpeta-cuota {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.carpeta-cuota .tarjeta { margin-bottom: 0; }
+
 .filtros {
   display: grid;
   grid-template-columns: 1fr;
@@ -221,6 +413,15 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   margin-bottom: 1.5rem;
 }
 .filtros .campo { margin-bottom: 0; }
+
+.filtros-avanzados { margin: 0.75rem 0 1.25rem; }
+.filtros-avanzados summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-primario);
+  padding: 0.3rem 0;
+}
+.filtros-avanzados .filtros { margin-top: 0.75rem; margin-bottom: 0; }
 
 .lista-documentos { list-style: none; margin: 0; padding: 0; }
 
@@ -254,9 +455,28 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .paginacion { display: flex; justify-content: space-between; margin-top: 1rem; }
 
-dl.detalle { margin: 0; }
-dl.detalle dt { font-weight: 600; margin-top: 0.75rem; }
-dl.detalle dd { margin: 0.15rem 0 0; }
+/* Pares de etiqueta y valor en una rejilla, nunca apilados y en linea mezclados en el
+   mismo bloque: la columna de etiquetas mide lo mismo para todas (el ancho de la mas
+   larga, por el "auto" de la primera columna), asi que todos los valores arrancan en
+   la misma vertical. Una sola columna por debajo de 480px -- ahi ya no cabe una
+   etiqueta como "Entidad emisora" al lado de su valor sin apretar demasiado el
+   segundo, asi que se apila entera (misma regla para las dos, sin mezclar dentro de
+   un mismo bloque). */
+dl.detalle {
+  display: grid;
+  grid-template-columns: 1fr;
+  row-gap: 0.6rem;
+  margin: 0;
+}
+dl.detalle dt { font-weight: 600; }
+dl.detalle dd { margin: 0; }
+
+@media (min-width: 480px) {
+  dl.detalle {
+    grid-template-columns: auto 1fr;
+    column-gap: 1.25rem;
+  }
+}
 
 /* --- notificaciones --------------------------------------------------------- */
 
@@ -305,6 +525,77 @@ dl.detalle dd { margin: 0.15rem 0 0; }
   background: var(--color-suave);
   border-radius: var(--radio);
   word-break: break-all;
+}
+
+/* --- dialogo de confirmacion (eliminar, cerrar sesion) ---------------------- */
+/* <dialog> nativo en vez de window.confirm(): mismo componente para ambas acciones,
+   ver app/portal/static/confirmar.js. Cancelar y confirmar comparten geometria
+   (.boton) y se distinguen solo por color -- cancelar en neutro y con el foco
+   inicial, para que pulsar Enter sin mirar no confirme nada por accidente. */
+.dialogo {
+  border: none;
+  border-radius: var(--radio);
+  padding: 1.5rem;
+  max-width: 26rem;
+  width: calc(100% - 2rem);
+  box-shadow: 0 20px 40px rgba(27, 29, 26, 0.18);
+}
+.dialogo::backdrop { background: rgba(27, 29, 26, 0.5); }
+.dialogo p { margin: 0; }
+.dialogo .acciones { margin-top: 1.25rem; justify-content: flex-end; }
+
+/* --- entrada: tarjeta partida (iniciar sesion / registro) ------------------- */
+
+.entrada {
+  display: flex;
+  background: var(--color-fondo);
+  border: 1px solid #E5E1D7;
+  border-radius: var(--radio-grande);
+  overflow: hidden;
+  min-height: 560px;
+}
+
+.entrada__forma {
+  flex: 1 1 55%;
+  padding: 3rem 3.5rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.entrada__panel {
+  flex: 1 1 45%;
+  background: var(--color-primario);
+  color: #FFFFFF;
+  padding: 3rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border-radius: 180px 0 0 180px;
+}
+.entrada__panel h2 { color: #FFFFFF; margin: 0 0 0.75rem; }
+.entrada__panel p  { color: #D4E0E8; max-width: 22rem; margin: 0 0 2rem; line-height: 1.6; }
+.entrada__panel .boton {
+  background: transparent;
+  border: 1.5px solid #FFFFFF;
+  color: #FFFFFF;
+}
+.entrada__panel .boton:hover { background: rgba(255,255,255,0.12); }
+
+/* registro: el panel a la izquierda */
+.entrada--invertida .entrada__panel { order: -1; border-radius: 0 180px 180px 0; }
+
+@media (max-width: 800px) {
+  .entrada { flex-direction: column; min-height: 0; }
+  .entrada__forma { padding: 2rem 1.5rem; }
+  .entrada__panel,
+  .entrada--invertida .entrada__panel {
+    order: 0;
+    border-radius: 0;
+    padding: 2.25rem 1.5rem;
+  }
 }
 
 @media (min-width: 640px) {

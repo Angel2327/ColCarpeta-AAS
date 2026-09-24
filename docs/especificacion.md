@@ -552,6 +552,13 @@ Se consulta `getOperators` y se guarda en `operador_cache`. El refresco es cada 
 
 Cuando el operador destino no publica `transferAPIURL`, la entrega de documentos se hace por correo electrónico.
 
+El desplegable de operador destino que ve el ciudadano (portal, pantalla de traslado) aplica además dos filtros propios, ninguno parte del acuerdo con el MinTIC:
+
+- **`transferAPIURL` realmente utilizable**: presente, bien formada, con el esquema que exige `TRANSFERENCIA_EXIGIR_HTTPS`, y (solo cuando esa variable está en `true`, es decir, contra el directorio real) apuntando a un host que en principio podría ser público -- ni `localhost`, `0.0.0.0`, `127.x.x.x`, ni un host sin punto. El directorio del MinTIC es dato sucio y trae entradas así; nunca serían alcanzables de verdad.
+- **`OPERADORES_EXCLUIDOS`**: lista de `_id` (nunca de `operatorName`: el directorio tiene nombres duplicados) que el operador de ColCarpeta decide no ofrecer al ciudadano, sin importar si publican una URL válida. Es una decisión de operación nuestra, no una corrección del directorio: el directorio sigue siendo la fuente de verdad, esto solo filtra qué le mostramos al ciudadano al elegir destino. Variable de entorno, vacía por defecto, para poder quitar a alguien de la lista sin redesplegar el día que arregle su operador.
+
+El primer filtro (`app.interoperabilidad.traslado_servicios.url_transferencia_utilizable`) es compartido: lo usan por igual el desplegable, la ruta que recibe la solicitud de traslado y el envío real en segundo plano, nunca una copia del mismo chequeo en varios lugares. El segundo (`OPERADORES_EXCLUIDOS`) solo aplica al desplegable -- una solicitud que ya trajera ese `_id` (por ejemplo, contra la API JSON directamente) no se rechaza por esto; es un filtro de qué se ofrece, no una prohibición de recibirlo.
+
 ### Tiempos de espera de transferencia
 
 | Evento | Valor |

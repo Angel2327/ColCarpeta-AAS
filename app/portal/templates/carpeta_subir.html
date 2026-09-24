@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block titulo %}Subir un documento{% endblock %}
+{% block main_extra_class %}contenedor--estrecho{% endblock %}
+{% block contenido %}
+<p><a href="/carpeta">« Volver a mi carpeta</a></p>
+<h1>Subir un documento</h1>
+
+{% if error %}
+<p class="aviso aviso--error" role="alert">{{ error }}</p>
+{% endif %}
+
+<div class="tarjeta">
+  <form method="post" action="/carpeta/documentos" enctype="multipart/form-data" novalidate>
+    <div class="campo">
+      <label for="archivo">Archivo (PDF, JPG o PNG)</label>
+      <input type="file" id="archivo" name="archivo" accept=".pdf,.jpg,.jpeg,.png" required>
+    </div>
+    <div class="campo">
+      <label for="titulo">Título</label>
+      <input type="text" id="titulo" name="titulo" required value="{{ valores.titulo if valores else '' }}">
+    </div>
+    <div class="campo">
+      <label for="tipo">Tipo de documento</label>
+      <input type="text" id="tipo" name="tipo" required placeholder="Ej: cédula, certificado, recibo" value="{{ valores.tipo if valores else '' }}">
+    </div>
+    <div class="campo">
+      <label for="entidad_emisora">Entidad emisora (opcional)</label>
+      <input type="text" id="entidad_emisora" name="entidad_emisora" value="{{ valores.entidad_emisora if valores else '' }}">
+    </div>
+    <div class="campo">
+      <label for="fecha_emision">Fecha de emisión (opcional)</label>
+      <input type="date" id="fecha_emision" name="fecha_emision" value="{{ valores.fecha_emision if valores else '' }}">
+    </div>
+    <p class="ayuda ayuda--previa">Si el archivo trae una firma digital, la revisamos en segundo plano: puedes seguir usando tu carpeta mientras tanto.</p>
+    <button type="submit">Subir documento</button>
+  </form>
+</div>
+{% endblock %}

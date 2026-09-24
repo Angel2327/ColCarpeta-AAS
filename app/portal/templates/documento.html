@@ -1,6 +1,7 @@
 {% import "_macros.html" as m %}
 {% extends "base.html" %}
 {% block titulo %}{{ doc.titulo }}{% endblock %}
+{% block main_extra_class %}contenedor--estrecho{% endblock %}
 {% block contenido %}
 <p><a href="/carpeta">« Volver a mi carpeta</a></p>
 <h1>{{ doc.titulo }}</h1>
@@ -38,11 +39,11 @@
   </dl>
 
   <div class="acciones">
-    <a class="boton" href="/documentos/{{ doc.id }}/descarga">Descargar</a>
+    <a class="boton boton--secundario" href="/documentos/{{ doc.id }}/descarga">Descargar</a>
     {% if not doc.certificado and doc.estado.value == "ACTIVO" %}
-    <a class="boton boton--secundario" href="/documentos/{{ doc.id }}/sustituir">Sustituir por una versión nueva</a>
-    <form method="post" action="/documentos/{{ doc.id }}/eliminar">
-      <button type="submit" class="boton boton--peligro">Eliminar</button>
+    <a class="boton boton--neutro" href="/documentos/{{ doc.id }}/sustituir">Sustituir por una versión nueva</a>
+    <form method="post" action="/documentos/{{ doc.id }}/eliminar" data-confirmar="¿Eliminar «{{ doc.titulo }}» de tu carpeta?">
+      <button type="submit" class="boton boton--peligro-discreto">Eliminar</button>
     </form>
     {% endif %}
   </div>

@@ -484,6 +484,7 @@ async def _enviar_transferencia(gov: GovCarpeta, payload: dict) -> None:
     from app.db import SessionLocal
     from app.documentos.almacenamiento import generar_url_descarga
     from app.interoperabilidad.operadores import enviar_ciudadano
+    from app.interoperabilidad.traslado_servicios import url_transferencia_utilizable
 
     cfg = get_config()
     cedula = payload["cedula"]
@@ -514,8 +515,8 @@ async def _enviar_transferencia(gov: GovCarpeta, payload: dict) -> None:
         contact_email = ciudadano.email_personal
 
     operador = await _refrescar_operador(gov, operador_destino_id)
-    url_valida = operador is not None and operador.transfer_api_url and (
-        operador.transfer_api_url.startswith("https://") or not cfg.transferencia_exigir_https
+    url_valida = operador is not None and url_transferencia_utilizable(
+        operador.transfer_api_url, exigir_https=cfg.transferencia_exigir_https
     )
     if not url_valida:
         # No es transitorio: reintentar no va a cambiar lo que publica el directorio en

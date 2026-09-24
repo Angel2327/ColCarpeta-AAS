@@ -13,15 +13,15 @@
     {% if doc.fecha_emision %} · emitido el {{ doc.fecha_emision.strftime("%d/%m/%Y") }}{% endif %}
   </div>
   <div class="documento-fila__acciones">
-    <a href="/documentos/{{ doc.id }}/descarga">Descargar</a>
+    <a class="boton-enlace" href="/documentos/{{ doc.id }}/descarga">Descargar</a>
     {% if not doc.certificado %}
-    <a href="/documentos/{{ doc.id }}/sustituir">Sustituir</a>
+    <a class="boton-enlace" href="/documentos/{{ doc.id }}/sustituir">Sustituir</a>
     <form method="post" action="/documentos/{{ doc.id }}/eliminar"
           hx-post="/documentos/{{ doc.id }}/eliminar"
           hx-target="#documento-{{ doc.id }}"
           hx-swap="outerHTML"
           hx-confirm="¿Eliminar «{{ doc.titulo }}» de tu carpeta?">
-      <button type="submit" class="boton-enlace">Eliminar</button>
+      <button type="submit" class="boton-enlace boton-enlace--peligro">Eliminar</button>
     </form>
     {% endif %}
   </div>

@@ -833,6 +833,349 @@ los ajustes. Al confirmar el traslado real en Docker se verificó directamente e
 logs de `app-b` que el correo simulado de primer acceso también sale con tildes
 ("Tu carpeta se trasladó a ColCarpeta...").
 
+**Dirección visual del portal aplicada el 2026-09-23, contra `docs/diseno.md`
+(documento nuevo, no escrito en esta tarea -- ya existía como especificación de
+diseño).** Cambio de piel puro: ninguna ruta, contrato de API, ni estructura de
+plantilla se tocó más allá de lo que el documento pedía explícitamente. Se modificaron
+`app/portal/static/estilos.css` (paleta, tipografía, tamaños de campo/botón,
+`.etiqueta`), `app/portal/templates/base.html` (favicon/manifest/theme-color, fuentes
+de Google, ícono junto a la marca en el encabezado, nuevo bloque `main_extra_class`) y
+`app/portal/templates/sesion.html`/`registro.html` (nueva tarjeta partida
+`.entrada`/`.entrada__forma`/`.entrada__panel`, con el panel invertido en registro).
+Los archivos de marca (`favicon.ico`, `icono.svg`, `icono-180/192/512.png`,
+`site.webmanifest`) ya estaban en `app/portal/static/` antes de esta tarea; `marca.svg`
+queda sin usar dentro del portal a propósito (el documento lo reserva para fuera del
+navegador).
+
+Dos puntos que el documento señalaba explícitamente para confirmar: `etiqueta--certificado`
+pasó del verde (que compartía con `etiqueta--firma-valida`) a un ocre propio
+(`--color-certificado-fondo`/`--color-certificado-texto`) -- el verde
+(`--color-exito-fondo`/`--color-exito-texto`) queda ahora exclusivo de la firma
+verificada y de los avisos de éxito genéricos. Y la variable `--color-suave`, que antes
+hacía de fondo de página y de relleno sutil a la vez, se separó en dos: `body` pasa a
+usar la nueva `--color-fondo-pagina`, y se revisaron uno por uno los cinco usos
+restantes de `--color-suave` (`.boton--secundario:hover`, `.etiqueta--temporal`,
+`.etiqueta--firma-ausente`, `.barra-cuota`, `.valor-destacado`) -- los cinco eran ya
+relleno sutil legítimo y no cambiaron de valor, solo se les quitó el `border` que
+`etiqueta--temporal`/`etiqueta--firma-ausente` tenían antes, por pedido del documento.
+Ninguno quedó viéndose raro tras la separación.
+
+Probado de punta a punta en Docker, reconstruyendo `app-a`/`app-b` con el nuevo CSS y
+plantillas: `prueba-portal` (registro, login, subir, detalle, descargar, eliminar,
+redirecciones `/portal/...`, salir), `prueba-portal-segunda-pasada` (notificaciones,
+perfil, TOTP, sustituir CU-10, traslado CU-03 completo hasta `CONFIRMADA`) y
+`prueba-portal-primer-acceso` (con un token real extraído del log de `app-b`) -- las
+tres sin fallos, sin necesidad de ajustar ninguna aserción de texto o de clase. Como
+regresión sobre la API JSON (que este cambio no debería tocar en absoluto, al ser
+puramente de plantillas/CSS del portal): `prueba-carpeta-completa`,
+`prueba-envio-transferencia` (con `prueba-reconciliacion`, sus cuatro escenarios, y
+`prueba-regreso-antes-de-purga` encima) y `prueba-primer-acceso` (con un segundo token
+real) -- las cinco sin fallos. Se verificó además, contra el contenedor vivo por
+`curl`, que `/static/favicon.ico` responde 200 con `image/vnd.microsoft.icon` y que el
+`<head>` de `/sesion` trae los `<link rel="icon">`/`<link rel="apple-touch-icon">`
+esperados, y que el encabezado renderiza el `<img>` de `icono.svg` junto al nombre.
+
+**Tres correcciones más de `docs/diseno.md` aplicadas el 2026-09-23** (el documento se
+amplió con secciones 5-final, 6 y 7 nuevas después de la pasada anterior): campos
+obligatorios que ya no se pintan de rojo al cargar la página, navegación del
+encabezado con semántica propia, y la carpeta separada en dos páginas.
+
+- **`input:invalid` → `input:user-invalid`** (`estilos.css`): antes cualquier campo
+  vacío se marcaba en rojo desde el primer render, antes de que la persona escribiera
+  nada. `:user-invalid` (CSS Selectors Level 4) solo se cumple después de que el campo
+  fue tocado.
+- **`.encabezado__nav` deja de heredar el estilo de los enlaces de texto corrido**:
+  sin subrayado por defecto, color `--color-texto-tenue`, subrayado solo en
+  `:hover`/`:focus-visible`. La página actual se marca con `aria-current="page"`
+  (borde inferior en `--color-primario`), calculado por una función nueva
+  registrada como global de Jinja (`app.portal.router._es_seccion_activa`, expuesta
+  como `activa(request, *prefijos)`) en vez de que cada ruta tenga que pasarlo a mano
+  -- compara `request.url.path` contra los prefijos de cada sección ("Mi carpeta"
+  cubre `/carpeta` y `/documentos`, ya que el detalle de un documento sigue siendo
+  parte de esa sección). El contador de notificaciones (`_notificaciones_contador.html`)
+  es un caso aparte: se sirve por su propia petición HTMX a
+  `/notificaciones/contador`, cuya URL nunca es la página que el ciudadano está
+  viendo -- ahí `activa()` lee `HX-Current-Url` (la URL real del navegador, que HTMX
+  manda siempre) en vez de `request.url.path`. Sin ese detalle, la insignia se habría
+  marcado activa en cualquier pantalla, no solo en `/notificaciones`.
+- **Enlace o botón, auditado**: se revisó cada `<a href>` del portal -- ninguno muta
+  nada, todos navegan (descargar, sustituir, filtrar, paginar). Cada acción que
+  cambia algo (eliminar un documento, marcar una notificación como leída, deshabilitar
+  el segundo factor, confirmar un traslado) ya era un `<button>` dentro de un
+  `<form method="post">`, en ambos lugares donde aparece Eliminar
+  (`_documento_fila.html` y `documento.html`) -- no fue necesario corregir nada ahí,
+  solo confirmarlo. Sí se ajustaron los *pesos* visuales de las acciones de un
+  documento, que el documento pedía explícitamente: Descargar pasó de botón primario
+  a `boton--secundario` (es la acción habitual); Sustituir y Eliminar pasaron de
+  enlace/botón sólidos a `boton-enlace` (discretos, ocasionales), con Eliminar en rojo
+  (`boton-enlace--peligro`, nueva clase) pero sin el bloque sólido de antes. Hallazgo
+  aparte, fuera del alcance de esta tarea y no corregido: `totp.html` usa
+  `boton--peligro` (rojo sólido) en "Deshabilitar segundo factor", que en sentido
+  estricto viola el principio 1 del documento ("el rojo queda reservado para
+  trasladarse y eliminar, nada más") -- preexistente, no introducido aquí.
+- **La carpeta se separa en dos páginas**: `GET /carpeta` ya no trae el formulario de
+  carga -- ahora solo la cabecera (título + cuota en una línea con su barra, ambas
+  compactas vía `.carpeta-cabecera`/`.cuota-linea`, reutilizando `perfil_servicios.
+  obtener_perfil` para el dato de cuota, que la ruta de la carpeta no consultaba antes),
+  un botón "Subir documento" hacia `/carpeta/subir` (ruta nueva, `GET`), los filtros y
+  la lista. Los filtros con menos uso (entidad, procedencia, fechas) quedaron dentro de
+  un `<details>` cerrado ("Más filtros"), que se abre solo si alguno de ellos ya trae
+  un valor -- título y tipo, los más usados, siguen siempre visibles. `POST
+  /carpeta/documentos` no cambió de URL (los scripts de prueba existentes que postean
+  ahí directo siguen funcionando sin tocarlos); lo que cambió es que ahora, tanto al
+  mostrar el formulario vacío como al rechazar una carga con error, renderiza la
+  plantilla nueva `carpeta_subir.html` en vez de `carpeta.html` -- esto además
+  simplificó la ruta: ya no hace falta volver a listar los documentos solo para
+  redibujar la página con el error.
+
+Probado de punta a punta en Docker con un script ad-hoc (no incorporado a la
+suite, solo para esta verificación): registro, login, `GET /carpeta` sin el
+formulario inline y con botón/cuota/filtros avanzados/`aria-current`, `GET
+/carpeta/subir` con el formulario y la navegación marcando igual "Mi carpeta" como
+activa (por el prefijo `/carpeta`), una carga real completada desde la página nueva
+con el redirect a `/carpeta?subido=1` y el aviso de éxito, y `/perfil` marcando su
+propia sección sin marcar también "Mi carpeta". Como regresión completa (estos
+cambios tocan rutas y no solo CSS, a diferencia de la pasada anterior): `prueba-portal`,
+`prueba-portal-segunda-pasada`, `prueba-portal-primer-acceso` (con un token real) y la
+suite JSON (`prueba-carpeta-completa`, `prueba-envio-transferencia`,
+`prueba-reconciliacion` sus cuatro escenarios, `prueba-regreso-antes-de-purga`,
+`prueba-primer-acceso` con un segundo token real) -- todas sin fallos, sin ajustar
+ninguna aserción. No se probó a 390 px de ancho con un navegador real ni una captura
+de pantalla (no hay herramienta de renderizado disponible en esta sesión): se revisó
+por CSS que nada tiene un ancho fijo mayor al viewport disponible a ese tamaño
+(`.cuota-linea .barra-cuota` son 160px, muy por debajo) y que los contenedores
+flexibles relevantes (`.carpeta-cabecera`, `.encabezado__nav`, al que se le agregó
+`flex-wrap: wrap` en esta misma tarea) permiten que el contenido se apile en vez de
+desbordar -- es una revisión de código, no una verificación visual.
+
+**Siete correcciones más al portal, encontradas usándolo (no leyendo el código),
+aplicadas el 2026-09-24.** `docs/diseno.md` ya traía escritas las reglas detrás de
+varias de estas correcciones -- señal de que se había avanzado en una sesión anterior
+sin que el código llegara a aplicarlas del todo (el contenedor seguía en 1080px, no en
+los 1120px que el documento ya pedía) -- así que el trabajo real de esta tarea fue
+tanto corregir lo reportado como terminar de alinear el código con lo que el documento
+ya describía, y limpiar dos artefactos de edición del documento mismo (un bloque de
+CSS de "Cerrar sesión" duplicado dos veces seguidas, y una referencia residual a
+`.contenedor--ancho` que la sección de ancho más nueva ya había vuelto innecesaria).
+
+1. **El contenedor sube a 1120px** (`estilos.css`, `.contenedor`), no los 1080px de la
+   pasada anterior -- ese número ya estaba en `docs/diseno.md` sin aplicar. La barra del
+   encabezado usa la misma clase, así que queda alineada sin tocarla aparte. Los
+   formularios de una sola columna (perfil, TOTP, traslado, notificaciones, detalle de
+   un documento, sustituir, subir, primer acceso) siguen su propio tope --
+   `.contenedor--estrecho` (640px, sin cambios de esta tarea), aplicado vía el bloque
+   `main_extra_class` de `base.html` en cada una de esas nueve plantillas. La tarjeta
+   partida de `sesion.html`/`registro.html` no necesita ese tope: a 1120px de ancho,
+   `.entrada__forma` (55% del contenedor menos su padding) cae sola cerca de los 500px,
+   ya angosta por su propio diseño de columnas.
+2. **La cuota vuelve a tener su columna a la derecha** a partir de 1000px
+   (`.carpeta-diseno`, grid de `1fr 300px`; por debajo de ese ancho se apila, la
+   cuota después de la lista). Va en su propia tarjeta (`.carpeta-cuota .tarjeta`),
+   separada de la lista, con su barra y la nota de MB usados. Esto reemplaza la
+   `cuota-linea` de la pasada anterior (la línea junto al título "Mi carpeta"), que
+   desaparece por completo. `docs/diseno.md` describía además una segunda tarjeta en
+   esa misma columna, "Operador actual" con el enlace de traslado -- no estaba
+   construida y se agregó en esta misma tarea: `GET /carpeta` ahora pasa
+   `operador_actual` (`get_config().operator_name`, dato ya existente en `Config`,
+   nunca escrito a mano en la plantilla) al contexto, y la tarjeta enlaza a
+   `/perfil/traslado`, el mismo destino que ya existe en `/perfil`. No agrega lógica de
+   negocio nueva: es un enlace más hacia una pantalla que ya existía.
+3. **Los botones "Filtrar"/"Limpiar filtros" ya no se descuadran al abrir "Más
+   filtros"** (`carpeta.html`): el bug real era que el `<form>` de los filtros tenía la
+   clase `filtros` (un grid) directamente, así que el `<details>` y el `<div
+   class="acciones">` de los botones eran también celdas de ese grid, y a partir del
+   punto de quiebre de 2 columnas (640px) el grid los repartía de forma impredecible
+   según si "Más filtros" estaba abierto o cerrado. Arreglado sacando `filtros` del
+   `<form>` y envolviendo cada grupo de campos (el visible y el de dentro del
+   `<details>`) en su propio `<div class="filtros">`: el `<details>` y `.acciones`
+   quedan como hijos de bloque normales del `<form>`, nunca celdas de un grid, así que
+   siempre ocupan su propia fila sin importar el estado del `<details>`.
+4. **"Cerrar sesión" se ve igual que los demás elementos de la barra** (`estilos.css`,
+   nueva regla `.encabezado__nav button`, misma receta que ya existía para
+   `.encabezado__nav a`: sin fondo, sin borde, mismo color y peso). Sigue siendo un
+   `<button>` dentro de un `<form method="post">` -- eso no cambia, cierra sesión y no
+   puede ser un enlace -- se le quitó la clase `boton-enlace` (ya redundante: la regla
+   nueva, más específica por combinar clase de contenedor y etiqueta, gana de todas
+   formas) porque esa clase lo pintaba en azul y subrayado, distinto del resto de la
+   navegación.
+5. **El texto de ayuda ya no queda pegado al lado del botón**, en subir y en
+   sustituir (`carpeta_subir.html`, `sustituir.html`). La causa: `.campo .ayuda` solo
+   forzaba `display: block` cuando el `<span class="ayuda">` estaba anidado dentro de
+   un `.campo` -- en esos dos formularios el texto de ayuda es hermano directo del
+   botón, fuera de cualquier `.campo`, así que heredaba el `display: inline` por
+   defecto de `<span>` y quedaba en la misma línea. Corregido generalizando la regla a
+   `.ayuda` (sin el prefijo `.campo`): ahora es siempre un bloque propio, sin importar
+   dónde esté anidado -- no hizo falta tocar ninguna plantilla para esto.
+6. **Cédula y dirección de carpeta en `/perfil` pasan a campos de verdad**
+   (`perfil.html`): antes eran una `<dl>` de texto suelto que no se distinguía del
+   resto de la pantalla. Ahora son `<input readonly>` -- deliberadamente `readonly`,
+   nunca `disabled`: un campo `disabled` no recibe foco ni lo anuncian los lectores de
+   pantalla, así que nadie podría enterarse de cuál es su propia dirección de carpeta;
+   `readonly` sí deja seleccionar y copiar el valor, que es exactamente lo que alguien
+   va a querer hacer con ese dato. Aspecto apagado vía una regla nueva y genérica,
+   `input[readonly]` (fondo `--color-suave`, texto tenue, cursor por defecto) -- no una
+   clase aparte, así que cualquier otro campo de solo lectura que aparezca después
+   hereda el mismo tratamiento sin que nadie tenga que acordarse de aplicarlo.
+7. **El botón de eliminar un documento ya no se pone oscuro al pasar el cursor**
+   (`estilos.css`, `.boton-enlace--peligro:hover`): antes heredaba el `background:
+   var(--color-primario-oscuro)` de la regla genérica `button:hover` (más específica
+   que el `.boton-enlace` base, que solo fija el fondo en reposo). Ahora
+   `.boton-enlace--peligro` tiene su propio hover, más específico que la regla
+   genérica: fondo `--color-error-fondo` (un rojo muy suave) con el texto en
+   `--color-error-texto` -- discreto incluso al pasar el cursor, coherente con que
+   Eliminar es una acción ocasional, no la principal de la fila.
+
+Probado de punta a punta en Docker, reconstruyendo `app-a`/`app-b`: `prueba-portal`,
+`prueba-portal-segunda-pasada` (con la tarjeta "Operador actual" y el enlace a
+`/perfil/traslado` visibles en `/carpeta` durante la misma corrida) y
+`prueba-portal-primer-acceso` (con un token real) -- las tres sin fallos. Como
+regresión de la suite JSON (estos cambios tocan una ruta -- `GET /carpeta` ahora
+también consulta `perfil_servicios.obtener_perfil` para la cuota, ya lo hacía desde la
+pasada anterior -- pero ningún contrato de la API): `prueba-carpeta-completa`,
+`prueba-envio-transferencia`, `prueba-reconciliacion` (los cuatro escenarios),
+`prueba-regreso-antes-de-purga` y `prueba-primer-acceso` -- las cinco sin fallos.
+Además, un script ad-hoc (no incorporado a la suite) verificó puntualmente cada una de
+las siete correcciones sobre el HTML servido: ausencia de `.cuota-linea`, presencia de
+`.carpeta-diseno`/`.carpeta-cuota`, el `<details>` cerrándose antes que el
+`<div class="acciones">` en el HTML servido, ausencia de la clase `boton-enlace` en el
+botón de salir, la regla `.ayuda` genérica (no `.campo .ayuda`) en el CSS servido, los
+campos `readonly` en `/perfil`, y la regla `input[readonly]`/`.boton-enlace--peligro:hover`
+en el CSS servido.
+
+**No se verificó a 390px ni a 1400px con un navegador real ni una captura de
+pantalla** -- sigue sin haber esa herramienta en esta sesión, igual que en la tarea
+anterior. Se revisó por código: a 390px, `.carpeta-diseno` (grid de una sola columna
+por debajo de 1000px) y `.encabezado__nav` (con `flex-wrap: wrap` desde la tarea
+anterior) permiten que todo se apile sin desbordar; a 1400px, `.contenedor` simplemente
+deja de crecer en 1120px (es un `max-width`, no un ancho fijo), así que no hay ningún
+comportamiento nuevo que verificar ahí más allá de que quede centrado -- ninguno de los
+dos es una confirmación visual real.
+
+**Siete arreglos de interfaz más, encontrados usando el portal (no leyendo el
+código), aplicados el 2026-09-24.**
+
+1. **Las tres acciones de `/documentos/{id}` (Descargar, Sustituir, Eliminar) pasan a
+   compartir geometría** -- antes Descargar era una caja con borde
+   (`boton boton--secundario`) y Sustituir/Eliminar eran texto suelto
+   (`boton-enlace`/`boton-enlace--peligro`), lo que obligaba a leer para saber que las
+   tres se podían pulsar. Ahora las tres son `.boton` (mismo alto, relleno, radio y
+   borde) con dos variantes nuevas que solo cambian el color: `boton--neutro`
+   (Sustituir, gris) y `boton--peligro-discreto` (Eliminar, rojo sin relleno sólido).
+   `boton--peligro` (relleno sólido) se queda igual que antes para una acción sola y
+   grave sin nada al lado (trasladarse, deshabilitar el segundo factor) -- la
+   diferencia de peso entre un grupo y una acción sola sigue siendo válida, lo que no
+   vale es mezclar pesos *dentro* del mismo grupo. Auditadas todas las pantallas
+   buscando el mismo problema: la fila compacta de un documento en la lista de la
+   carpeta (`_documento_fila.html`) ya compartía geometría entre sus tres acciones
+   (las tres en `boton-enlace`, solo Eliminar con su variante de color) desde la tarea
+   anterior, así que no hizo falta tocarla -- ninguna otra pantalla tiene un grupo de
+   dos o más acciones con formas distintas.
+2. **`dl.detalle` (el detalle de un documento y el resultado de la firma) pasa a una
+   rejilla de dos columnas** (`grid-template-columns: auto 1fr` a partir de 480px, una
+   sola columna por debajo) en vez de etiqueta y valor apilados sin relación entre
+   pares: ahora la columna de etiquetas mide lo que pida la más larga y todos los
+   valores arrancan en la misma vertical, para las dos tarjetas que usan esa clase.
+3. **Eliminar un documento y cerrar sesión piden confirmación con un `<dialog>` nativo
+   propio** (`app/portal/static/confirmar.js`, nuevo) en vez del `window.confirm()` del
+   navegador (que mostraba el dominio, "127.0.0.1:8000 dice", y no se podía estilar).
+   Un solo diálogo compartido, inyectado una vez en `base.html`: Cancelar en neutro y
+   con el foco inicial (para que `Enter` sin mirar no confirme nada), Confirmar en
+   rojo. Dos caminos de enganche, sin tocar el atributo `hx-confirm` que ya existía:
+   los formularios normales (cerrar sesión, eliminar desde el detalle -- este último
+   no tenía NINGUNA confirmación hasta ahora, ni siquiera la nativa) llevan
+   `data-confirmar="mensaje"` e interceptan su propio `submit`; el formulario con HTMX
+   de la lista de documentos ya dispara `htmx:confirm` con el texto de su
+   `hx-confirm`, así que basta escuchar ese evento una sola vez. **La acción nunca
+   depende del diálogo**: sin JavaScript, cada formulario se sigue enviando de forma
+   normal (verificado indirectamente: `scripts/probar_portal.py` usa `httpx`, que
+   nunca ejecuta JavaScript, y su paso de eliminar sigue pasando -- ejercita
+   exactamente el camino sin JS).
+4. **La ayuda de subir y de sustituir pasa a estar ENCIMA del botón, no debajo.** La
+   tarea anterior ya había arreglado que no quedara *al lado* del botón (generalizando
+   `.ayuda` a `display: block` sin importar dónde estuviera anidada), pero el orden en
+   el HTML seguía siendo botón-primero-ayuda-después, así que la ayuda quedaba debajo,
+   pegada, en vez de encima con aire de sobra antes del botón como se pidió. Nueva
+   clase `.ayuda--previa` (`margin: 0.25rem 0 1rem`) más el cambio de orden en las dos
+   plantillas. La guía vieja en `docs/diseno.md` (que decía "primero el botón, después
+   la explicación") estaba mal y quedó corregida.
+5. **El filtro de operadores del traslado se consolidó en una sola función**,
+   `url_transferencia_utilizable` (`app.interoperabilidad.traslado_servicios`), que
+   ahora usan los tres lugares que antes tenían su propia copia del mismo chequeo:
+   `listar_operadores_transferibles` (el desplegable), `solicitar_traslado` (la ruta
+   que recibe la solicitud) y `app.interoperabilidad.outbox._enviar_transferencia` (el
+   envío real). Descarta URL ausente o mal formada, esquema distinto de `https` (o de
+   `http`/`https` si `TRANSFERENCIA_EXIGIR_HTTPS` está apagado) siempre, y -- **solo
+   cuando `TRANSFERENCIA_EXIGIR_HTTPS` está prendido** -- hosts que no podrían ser
+   públicos (`localhost`, `0.0.0.0`, `127.x.x.x`, cualquier host sin punto). El chequeo
+   de host quedó condicionado a esa bandera porque aplicarlo siempre rompía
+   `docker-compose.test.yml`: `test-operador-b` apunta a `http://app-b:8000/...`, un
+   nombre de servicio de Docker sin punto, exactamente el patrón que se quería
+   descartar del directorio real -- se encontró de la peor forma, haciendo fallar
+   `prueba-portal-segunda-pasada` al primer intento ("test-operador-b todavia no
+   aparece en el directorio"), y se corrigió reutilizando la misma bandera que el
+   proyecto ya usa en todos lados para distinguir "directorio real" de "instancias de
+   prueba sin TLS". `docs/especificacion.md` ya documentaba la respuesta a "¿si no
+   queda ningún operador?" (`_documento_fila... No hay operadores disponibles...`
+   ya existía en `traslado.html` desde la pasada anterior del portal): no hizo falta
+   texto nuevo.
+
+Probado de punta a punta en Docker: `prueba-portal`, `prueba-portal-segunda-pasada`
+(que ejercita el filtro de operadores contra `test-operador-b` de verdad -- encontró y
+dejó corregido el problema del punto 5 antes de darse por terminada la tarea) y
+`prueba-portal-primer-acceso` (con un token real) -- las tres sin fallos tras la
+corrección. Regresión JSON: `prueba-carpeta-completa`, `prueba-envio-transferencia`
+(pasa también por `_enviar_transferencia`, el tercer lugar que ahora usa el filtro
+compartido), `prueba-reconciliacion` (los cuatro escenarios), `prueba-regreso-antes-
+de-purga`, `prueba-primer-acceso` y `prueba-firma-digital` -- las seis sin fallos. Se
+verificó además, con un script ad-hoc contra el HTML/CSS servido, cada uno de los
+siete puntos por separado (clases de botón unificadas, la rejilla de `dl.detalle`, el
+diálogo y su script cargados, el orden ayuda-antes-que-botón, y la pantalla de
+traslado respondiendo 200).
+
+**Un hallazgo aparte, no un bug de esta tarea:** al generar rápidamente varios
+ciudadanos de prueba con un PDF deliberadamente inválido (para otro chequeo manual),
+uno de esos documentos hizo que `_validar_firma` registrara en el log un traceback
+completo de pyHanko (`PdfReadError: startxref not found`) al no poder ni siquiera
+abrir el archivo. La fila de `outbox` terminó igual `COMPLETADO` (no se cayó, no
+bloqueó a otros ciudadanos) -- comportamiento correcto según el diseño ya documentado
+("una firma inválida nunca es un rechazo"), solo con un log más ruidoso de lo
+necessario para un caso ya anticipado (un archivo que ni siquiera es un PDF válido).
+No se tocó nada al respecto: queda como una nota, no como algo corregido en esta
+tarea.
+
+**Lista de exclusión de operadores destino, agregada el 2026-09-24.** Nueva variable
+`OPERADORES_EXCLUIDOS` (`Config.operadores_excluidos`, vacía por defecto; propiedad
+`operadores_excluidos_ids` la separa por comas y recorta espacios), aplicada en
+`listar_operadores_transferibles` -- **por encima** del filtro de URL utilizable de la
+tarea anterior, y **solo** ahí: descarta operadores del desplegable por `_id`, nunca
+por `nombre` (el directorio tiene nombres duplicados, CLAUDE.md "trampa 5"). Es una
+decisión de operación propia, no una corrección del directorio -- documentado así en
+docs/especificacion.md, "Directorio de operadores": el directorio sigue siendo la
+fuente de verdad, esto solo filtra qué se le ofrece al ciudadano. Variable de entorno
+en vez de una lista en el código, para poder sacar a alguien sin redesplegar el día
+que arregle su operador. Agregada a `.env.example` con el valor vacío y su comentario.
+
+**Deliberadamente no se aplica en `solicitar_traslado` ni en el envío real**
+(`app.interoperabilidad.outbox._enviar_transferencia`): la instrucción de esta tarea
+la limitaba explícitamente a "no se muestran en el desplegable", así que una solicitud
+que ya trajera ese `_id` (por ejemplo, contra la API JSON directamente, sin pasar por
+el desplegable del portal) no se rechaza por esto hoy. Si se quiere que la exclusión
+también bloquee la solicitud en sí, falta agregarla ahí -- no se hizo porque no era lo
+pedido, y hacerlo sin que se pidiera habría sido una decisión de alcance no
+solicitada.
+
+Probado en Docker contra `app-a`: con `OPERADORES_EXCLUIDOS` vacía (el valor por
+defecto, sin declarar la variable) el desplegable de `/perfil/traslado` mostró los
+mismos dos operadores de siempre (`test-operador-a`, `test-operador-b`) -- el
+comportamiento no cambió. Editando puntualmente `OPERADORES_EXCLUIDOS=test-operador-a`
+en el entorno de `app-a` de `docker-compose.test.yml` (cambio temporal, revertido
+antes de terminar la tarea -- `git diff` sobre ese archivo queda limpio) y
+reconstruyendo el contenedor, el mismo desplegable pasó a mostrar solo
+`test-operador-b`. Como regresión con el valor vacío restaurado:
+`prueba-portal-segunda-pasada` (ejercita el desplegable real y el traslado completo
+hasta `CONFIRMADA`), `prueba-envio-transferencia` y `prueba-reconciliacion` (los
+cuatro escenarios) -- las tres sin fallos.
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio

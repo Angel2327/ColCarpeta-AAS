@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block titulo %}Mi perfil{% endblock %}
+{% block main_extra_class %}contenedor--estrecho{% endblock %}
 {% block contenido %}
 <h1>Mi perfil</h1>
 
@@ -9,13 +10,15 @@
 
 <section class="tarjeta" aria-labelledby="titulo-datos">
   <h2 id="titulo-datos">Mis datos</h2>
-  <dl class="detalle">
-    <dt>Cédula</dt>
-    <dd>{{ ciudadano.id }}</dd>
-    <dt>Dirección de carpeta</dt>
-    <dd>{{ ciudadano.email_carpeta or "(pendiente)" }}</dd>
-  </dl>
-  <p class="nota-pequena">La cédula y la dirección de carpeta son permanentes: no se pueden cambiar.</p>
+  <div class="campo">
+    <label for="cedula_ro">Cédula</label>
+    <input type="text" id="cedula_ro" value="{{ ciudadano.id }}" readonly>
+  </div>
+  <div class="campo">
+    <label for="email_carpeta_ro">Dirección de carpeta</label>
+    <input type="text" id="email_carpeta_ro" value="{{ ciudadano.email_carpeta or '(pendiente)' }}" readonly>
+    <span class="ayuda">La cédula y la dirección de carpeta son permanentes: no se pueden cambiar.</span>
+  </div>
 
   <form method="post" action="/perfil" novalidate>
     <div class="campo">
