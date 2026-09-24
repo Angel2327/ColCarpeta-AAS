@@ -6,11 +6,12 @@ from contextlib import asynccontextmanager
 
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_config
+from app.portal.estaticos import cache_control_para, manifest_versionado
 
 # Sin esto, un logger propio (p. ej. "colcarpeta.notificaciones", usado para dejar
 # constancia demostrable del correo simulado de primer acceso) nunca imprime nada por
@@ -127,6 +128,38 @@ app.include_router(portal_perfil_router)
 app.include_router(portal_traslado_router)
 app.include_router(portal_primer_acceso_router)
 app.include_router(portal_router_legado)
+
+
+@app.get("/static/site.webmanifest", include_in_schema=False)
+async def manifest(request: Request):
+    """Registrada antes del `mount` de abajo para tomar precedencia sobre el archivo
+    real del mismo nombre: `site.webmanifest` declara sus propios iconos con una URL
+    fija, y esta version reescribe esas URL para que tambien lleven la version por
+    contenido (ver app.portal.estaticos)."""
+    respuesta = Response(content=manifest_versionado(), media_type="application/manifest+json")
+    respuesta.headers["Cache-Control"] = cache_control_para(request.scope.get("query_string", b""))
+    return respuesta
+
+
+class EstaticosVersionados(StaticFiles):
+    """Cache agresiva de verdad, pero solo para una URL versionada
+    (`app.portal.estaticos.url_estatica`): esa nunca cambia de contenido, un archivo
+    que cambia siempre estrena URL. Una peticion SIN el parametro de version -- la
+    redireccion historica `/portal/static/...` sigue apuntando a `/static/...` sin
+    version, a proposito, para no romper un enlace guardado -- no recibe la misma
+    cabecera: esa URL si puede cambiar de contenido en el proximo despliegue, y
+    guardarla un año habria sido peor que el problema original que esto vino a
+    resolver, porque ya ni un despliegue nuevo la corrige (encontrado el 2026-09-24,
+    antes de que este ajuste llegara a producción)."""
+
+    async def get_response(self, path: str, scope) -> Response:
+        respuesta = await super().get_response(path, scope)
+        respuesta.headers["Cache-Control"] = cache_control_para(scope.get("query_string", b""))
+        return respuesta
+
+
 # AD-11: el portal sirve sus propios estaticos (HTMX vendorizado, hoja de estilos) desde
 # el mismo proceso -- ninguna dependencia de red en tiempo de ejecucion.
-app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "portal" / "static")), name="portal-static")
+app.mount(
+    "/static", EstaticosVersionados(directory=str(Path(__file__).parent / "portal" / "static")), name="portal-static"
+)

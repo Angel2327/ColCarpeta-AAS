@@ -1176,6 +1176,60 @@ reconstruyendo el contenedor, el mismo desplegable pasó a mostrar solo
 hasta `CONFIRMADA`), `prueba-envio-transferencia` y `prueba-reconciliacion` (los
 cuatro escenarios) -- las tres sin fallos.
 
+**Cache-busting de los estáticos del portal, agregado el 2026-09-24 (encontrado en
+producción el mismo día: el CSS servido seguía siendo el anterior tras un despliegue
+hasta que alguien forzaba la recarga).** `StaticFiles` solo respondía con
+`ETag`/`Last-Modified` -- un navegador que ya tuviera un archivo en caché no volvía a
+pedirlo. Nuevo módulo `app/portal/estaticos.py`: `url_estatica(nombre)` calcula el
+SHA-256 del contenido del archivo (los primeros 10 caracteres, cacheado en memoria por
+proceso con `lru_cache`) y arma `/static/{nombre}?v={hash}` -- registrada como global
+de Jinja `estatico` (`app.portal.router`), nunca escrita a mano: `base.html` la usa en
+los siete lugares que apuntaban a `/static/...` (favicon, ícono del encabezado,
+apple-touch-icon, manifiesto, hoja de estilos, HTMX, `confirmar.js`). Los otros dos
+puntos que también apuntan a `/static/` sin ser un `<link>` de `base.html`:
+`site.webmanifest` declara sus propios íconos con una URL fija adentro de su propio
+contenido -- como no es una plantilla Jinja, no puede llamar a `url_estatica` por su
+cuenta, así que `app/main.py` registra una ruta explícita
+`GET /static/site.webmanifest` (antes del `mount` de abajo, para tener precedencia
+sobre el archivo real del mismo nombre) que reescribe esas URL una sola vez
+(`manifest_versionado`, también cacheada). `htmx.min.js` solo necesitaba pasar por
+`estatico` como cualquier otro archivo.
+
+**Corrección el mismo día, antes de llegar a producción: la cabecera `Cache-Control`
+agresiva se enviaba a *todo* `/static`, incluidas las URL sin parámetro de versión.**
+Sigue existiendo una: la redirección histórica `/portal/static/...`
+(`app.portal.router.router_legado`) apunta a `/static/...` sin versión a propósito,
+para no romper un enlace guardado con una versión que ya no existe. Cachear esa URL
+sin versión durante un año habría sido *peor* que el problema original: una URL así sí
+puede cambiar de contenido en el siguiente despliegue, y ya ni un despliegue nuevo la
+corrige, porque nunca vuelve a pedirse. Corregido con
+`app.portal.estaticos.cache_control_para(query_string)`: agresiva
+(`public, max-age=31536000, immutable`) solo si la petición trae `?v=...`; sin eso,
+`no-cache` (obliga a revalidar contra el `ETag` que `StaticFiles` ya pone -- sigue
+evitando volver a bajar el archivo si no cambió, solo ya no evita la ida y vuelta de
+red para preguntar). Aplicada tanto en `EstaticosVersionados.get_response` (el
+`mount` de `/static`) como en la ruta explícita del manifiesto.
+
+**El hash se calcula una sola vez por proceso.** En desarrollo con
+`uvicorn --reload`, editar un archivo bajo `app/portal/static/` (CSS, JS, íconos) NO
+dispara un reinicio automático -- `--reload` solo vigila archivos `.py` -- así que la
+URL versionada seguiría siendo la de antes hasta reiniciar el proceso a mano. No es un
+bug: es la misma razón por la que el cache-busting funciona en producción (un
+despliegue nuevo es un proceso nuevo), pero conviene tenerlo presente para no
+perseguir un cambio de CSS que "no aparece" en desarrollo.
+
+Probado con `TestClient` (sin Docker, ya que es un chequeo de cabeceras HTTP puntual,
+no un flujo de negocio): las siete URL de `base.html` salen versionadas, el
+manifiesto servido trae sus íconos también versionados, `Cache-Control` sale agresivo
+solo con `?v=...` (confirmado en `/static/estilos.css` con y sin el parámetro, y en
+`/static/site.webmanifest` con y sin él) y `no-cache` sin él. Verificado además "tras
+desplegar" reconstruyendo `app-a` en Docker: modifiqué `estilos.css`, reconstruí, y la
+versión en la página pasó de `448dd63e1f` a `209517e85e` (y volvió a su valor original
+al revertir el cambio de prueba). Regresión en Docker: `prueba-portal` (incluida la
+redirección legada, que sigue devolviendo la URL sin versión tal cual se esperaba),
+`prueba-portal-segunda-pasada`, `prueba-portal-primer-acceso` y
+`prueba-carpeta-completa` -- las cuatro sin fallos.
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio

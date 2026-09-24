@@ -35,6 +35,7 @@ from app.errors import ErrorDeNegocio
 from app.identidad import perfil_servicios
 from app.identidad.servicios import RespuestaSesion, SolicitudRegistro, SolicitudSesion, cerrar_sesion, iniciar_sesion, registrar_ciudadano
 from app.portal.auth import borrar_cookie_sesion, ciudadano_actual_portal, fijar_cookie_sesion
+from app.portal.estaticos import url_estatica
 
 router = APIRouter(tags=["portal"], include_in_schema=False)
 
@@ -44,6 +45,9 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 # no algo que cada ruta tenga que pasar en su contexto -- base.html lo usa en toda
 # pantalla autenticada, y no cambia entre peticiones dentro del mismo proceso.
 templates.env.globals["notificaciones_contador_intervalo_segundos"] = get_config().notificaciones_contador_intervalo_segundos
+# Cache-busting de /static (ver app.portal.estaticos): nunca se escribe "/static/..."
+# a mano en una plantilla, siempre a traves de esta funcion.
+templates.env.globals["estatico"] = url_estatica
 
 
 def _es_seccion_activa(request: Request, *prefijos: str) -> bool:
