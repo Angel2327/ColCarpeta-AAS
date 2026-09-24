@@ -603,3 +603,63 @@ dl.detalle dd { margin: 0; }
   :root { font-size: 16px; }
   .filtros { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* --- consola de administracion (RF32-RF37, CU-22) --------------------------- */
+/* Mismo sistema visual del portal, sin excepcion -- estas son las unicas piezas que
+   el portal nunca necesito: una franja que deja claro que esto no es el portal del
+   ciudadano, y una tabla para datos tabulares (resumen, ciudadanos, transferencias,
+   bandeja de salida, auditoria), que el portal tampoco necesito nunca. */
+
+.admin-franja {
+  background: var(--color-primario-oscuro);
+  color: #fff;
+  font-size: 0.78rem;
+  text-align: center;
+  padding: 0.4rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* Agrupa la navegacion de la consola (si hay sesion) con el enlace de vuelta al
+   portal, para que ambos queden a la derecha de la marca sin importar si la nav
+   esta presente (login no la tiene, pero el enlace al portal si debe estar). */
+.encabezado__derecha {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+/* Enlace claro (no discreto: es la contraparte del enlace discreto que el
+   portal ya tiene hacia /admin) de vuelta al portal del ciudadano -- mismo
+   tratamiento visual que un item mas de la navegacion de la consola. */
+.encabezado__portal-enlace {
+  text-decoration: none;
+  color: var(--color-texto-tenue);
+  font-weight: 500;
+}
+.encabezado__portal-enlace:hover,
+.encabezado__portal-enlace:focus-visible {
+  text-decoration: underline;
+}
+
+.resumen-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+}
+@media (min-width: 700px) {
+  .resumen-grid { grid-template-columns: 1fr 1fr; }
+}
+.resumen-grid .tarjeta { margin-bottom: 0; }
+
+.tabla-envoltorio { overflow-x: auto; margin-bottom: 1.25rem; }
+.tabla { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.tabla th, .tabla td {
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--color-borde);
+  white-space: nowrap;
+}
+.tabla th { font-weight: 600; color: var(--color-texto-tenue); }
+.tabla tbody tr:hover { background: var(--color-fondo-pagina); }

@@ -34,7 +34,8 @@ búsqueda, eliminación y sustitución de documentos, depósito por entidad emis
 validación de firma digital con pyHanko) · `app/notificaciones/` (envío simulado y
 centro de notificaciones, CU-17) · `app/portal/` (AD-11: todas las pantallas del
 ciudadano -- sesión, registro, carpeta, notificaciones, perfil, segundo factor,
-traslado, primer acceso) · `scripts/limpiar_prueba.py` ·
+traslado, primer acceso) · `app/admin/` (AD-12: consola de administración de solo
+lectura, RF32-RF37/CU-22) · `scripts/limpiar_prueba.py` ·
 `scripts/probar_transferencia.py` · `scripts/probar_envio_transferencia.py` ·
 `scripts/mock_centralizador.py` · `scripts/probar_carpeta_completa.py` ·
 `scripts/alta_entidad_emisora.py` · `scripts/probar_colision_email.py` ·
@@ -1266,6 +1267,112 @@ correctamente. Regresión: `prueba-portal` y `prueba-portal-segunda-pasada` (est
 fallos, más `prueba-carpeta-completa` confirmando que `GET`/`PATCH /api/v1/perfil` (la
 ruta JSON, que no toca esta pantalla) sigue sin cambios.
 
+**Consola de administración del operador (RF32-RF37, CU-22 -- ver AD-12 en
+docs/especificacion.md), implementada y probada de punta a punta el 2026-09-24.** Antes
+de esto no existía ninguna forma de ver el estado interno del sistema, y en particular
+ninguna de observar que otro operador nos transfirió un ciudadano: CU-16 no deja una
+fila propia en ninguna tabla, solo entradas de `outbox` y de `auditoria`. Nuevo paquete
+`app/admin/` (`auth.py`, `servicios.py`, `router.py`, `templates/`), montado bajo
+`/admin` en `app/main.py`, fuera del esquema OpenAPI y sin ningún enlace desde el
+portal del ciudadano.
+
+De solo lectura, sin excepción: ninguna pantalla tiene un botón que borre, reintente
+ni edite nada. Nunca expone el contenido de un documento (ni un enlace de descarga ni
+una URL firmada), y nunca muestra, ni siquiera truncado, un hash de contraseña, un
+secreto TOTP, un token de primer acceso ni la clave de una entidad emisora -- los
+`dataclass` de `app.admin.servicios` declaran explícitamente los campos que sí se
+muestran, nunca pasan un modelo de SQLAlchemy completo a una plantilla.
+
+Sin modelo de administradores: una sola credencial en `ADMIN_PASSWORD_HASH` (nueva
+variable, vacía por defecto = consola inutilizable hasta configurarla), verificada con
+la misma `app.identidad.seguridad.verificar_password` que ya usa el ciudadano. Sesión
+propia (`app.admin.auth`): cookie `colcarpeta_admin_sesion` con `path=/admin` (aparte
+de la cookie del ciudadano), mismas protecciones que el portal
+(`HttpOnly` + `Secure` + `SameSite=Strict`), JWT independiente del de
+`app.identidad.token` (mismas llaves RS256, claim `sub` fijo en `"admin"`, sin ningún
+`Ciudadano` detrás). Límite de intentos por origen, mismo patrón que el bloqueo de
+inicio de sesión del ciudadano (`app.identidad.servicios._intentos_fallidos`, derivado
+de `auditoria`, sin tabla propia): 5 intentos en 15 minutos por defecto, mismas
+variables `INTENTOS_LOGIN_MAXIMOS`/`INTENTOS_LOGIN_VENTANA_MINUTOS`/
+`BLOQUEO_LOGIN_MINUTOS` que ya existían. Cada acceso (login fallido, bloqueo, login
+exitoso, y cada pantalla vista) queda en `auditoria` con acciones propias
+(`admin.credenciales_invalidas`, `admin.bloqueado`, `admin.sesion_exitosa`,
+`admin.pantalla_vista`).
+
+Las cinco pantallas pedidas: **Resumen** (ciudadanos/documentos por estado,
+transferencias salientes por estado, bandeja de salida pendientes/fallidas -- este
+resumen agrupa `PENDIENTE` y `EN_PROCESO` de `outbox` bajo "pendientes", una
+interpretación propia: el pedido solo distinguía pendientes de fallidas, no las tres
+categorías por separado), **Ciudadanos** (cédula, nombre, estado, fecha de registro,
+documentos y cuota usada, buscable por cédula parcial), **Transferencias** (entrantes y
+salientes en una sola vista -- ver más abajo), **Bandeja de salida** (operación,
+estado, intentos, último error, próximo intento) y **Auditoría** (filtrable por
+cédula, acción y rango de fechas, paginada -- deliberadamente sin mostrar la columna
+`detalle` de ningún evento: auditar cada punto del código que escribe ahí para
+garantizar que ninguno registra algo sensible resultaba más riesgoso que simplemente no
+exponerla nunca desde una consola de solo lectura).
+
+La pantalla de transferencias es la única que exigió una decisión de diseño real:
+`Transferencia` (tabla) solo existe para el envío (CU-03) -- una recepción (CU-16)
+nunca crea una fila ahí, solo una entrada de `outbox` con `operacion =
+"receiveTransferCitizen"`. `app.admin.servicios.listar_transferencias` une las dos
+fuentes en Python (no en una sola consulta SQL, dado lo distinto de su forma) y
+resuelve el operador de una entrante por una heurística nueva e independiente
+(`_resolver_operador_por_confirm_api`, en el propio módulo): compara el host de la URL
+de `confirm_api` que trae la transferencia contra el host de `transfer_api_url` de cada
+operador del directorio. Deliberadamente NO reutiliza `_origen_coincide` de
+`app.interoperabilidad.transferencias` (esa función es un control de seguridad para un
+propósito distinto; acoplar un módulo de reporte de solo lectura a ella se sintió como
+el acoplamiento equivocado) -- nunca es una identidad confirmada, el ecosistema no
+tiene autenticación real entre operadores (ver "Trampas del contrato del
+centralizador", trampa 6).
+
+**Hallazgo, no de código:** el pedido original citaba "CU-19" para esta consola; la
+propia tabla de casos de uso de `docs/especificacion.md` la cataloga como **CU-22**
+("Operar consola de administración", RF36) -- CU-19 ("Consultar auditoría de accesos")
+es un caso de uso distinto, del lado del ciudadano (que un ciudadano vea quién accedió
+a sus propios documentos), que sigue sin implementar. La consola y su AD (AD-12,
+docs/especificacion.md) quedaron documentadas con la referencia correcta; se avisó en
+el reporte de la tarea para que quien la pidió lo supiera.
+
+Probado de punta a punta en Docker (`docker-compose.test.yml`, `app-a`/`app-b` con
+`ADMIN_PASSWORD_HASH` agregado de forma temporal a su entorno de prueba y revertido
+antes de terminar -- `git diff --stat docker-compose.test.yml` quedó limpio): sin
+cookie, las cinco pantallas redirigen a `/admin/login` (303); `/admin` no aparece en
+`/openapi.json` (se confirmó contra el esquema real, que sigue en 19 rutas de la API);
+login con clave incorrecta cinco veces seguidas bloquea el sexto intento **incluso con
+la clave correcta** (confirmando que el bloqueo es real, no solo un mensaje); con la
+cookie, las cinco pantallas responden 200 con datos reales -- se corrieron
+`scripts/probar_carpeta_completa.py` y `scripts/probar_envio_transferencia.py` primero
+para tener ciudadanos, documentos y una transferencia real que mostrar, y se confirmó
+que `app-b` (el receptor) muestra la transferencia entrante con dirección `ENTRANTE`,
+estado `RECIBIDA` y el operador de origen resuelto correctamente (`Operador A
+(prueba)`) -- exactamente el escenario que motivó la tarea. Se buscó
+(`argon2`, `X-Amz-`, `s3.`, `supabase`, `token_primer_acceso`, `totp_secret`,
+`api_key`, `password_hash`, `signature`, enlaces `.pdf`/`descarga`) en el HTML de las
+diez páginas capturadas (cinco pantallas × dos apps): ninguna coincidencia. No se probó
+`ADMIN_PASSWORD_HASH` vacío contra un servidor vivo (se verificó por lectura de código:
+`verificar_password(None, password)` siempre devuelve `False`, y
+`cfg.admin_password_hash or None` convierte la cadena vacía por defecto en `None`).
+
+**Dos ajustes más a la consola, el mismo 2026-09-24.** Primero, cerrar sesión en la
+consola pide confirmación con el mismo `<dialog>` nativo que ya usa el portal
+(`app/portal/static/confirmar.js`, reutilizado tal cual): `base_admin.html` agrega el
+mismo diálogo compartido y el mismo atributo `data-confirmar` en el formulario de
+salir, visible solo en las pantallas con sesión (la de login no lo necesita). Segundo,
+un enlace de vuelta al portal en la cabecera de la consola (`/`), para no tener que
+escribir la ruta a mano al salir de ahí. Se había agregado también un enlace discreto
+en el pie del portal hacia `/admin` ("Acceso del operador"), probado el mismo día, y se
+quitó a pedido explícito poco después: cualquier enlace hacia la consola visible en una
+pantalla que ve cualquier ciudadano -- por discreto que sea -- anuncia su existencia y
+su ruta exacta a un público mucho más amplio que quien la necesita, sin ninguna
+necesidad real (quien opera el sistema ya conoce la ruta). Documentado como un matiz de
+AD-12 (docs/especificacion.md): el enlace que sí queda (consola → portal) no relaja
+ningún control de la consola. Probado en Docker: el diálogo de confirmación aparece en
+`/admin/` y no en `/admin/login`; el enlace de vuelta al portal (`/`) funciona desde la
+cabecera de la consola; el portal ya no tiene ningún enlace hacia `/admin` en ningún
+lado.
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio
@@ -1279,8 +1386,8 @@ arriba); lo que sigue faltando es dar de alta o consultar entidades sin acceso d
 a la base.
 
 Notificaciones más allá del correo de registro, primer acceso, reenvío y depósito de un
-documento por una entidad (ver arriba), consola de administración, y CU-06 sin
-`descarga` masiva ni paquetes (RF27).
+documento por una entidad (ver arriba), y CU-06 sin `descarga` masiva ni paquetes
+(RF27).
 
 No registrar `registerTransferEndPoint` todavía: ver "Prohibido".
 
@@ -1368,6 +1475,18 @@ app/
                                 procedencia/firma), _documento_estado.html y
                                 _traslado_estado.html (fragmentos sondeados por HTMX)
     static/                    htmx.min.js (vendorizado) y estilos.css (mobile-first)
+  admin/                        AD-12: consola de administracion de solo lectura
+                                (RF32-RF37, CU-22), bajo /admin -- fuera del esquema
+                                OpenAPI, sin ningun enlace desde el portal (si enlaza
+                                de vuelta al portal desde su propia cabecera)
+    auth.py                    cookie de sesion propia (colcarpeta_admin_sesion,
+                                path=/admin) + JWT independiente del de identidad/token.py
+    servicios.py               consultas de solo lectura de las 5 pantallas + login con
+                                bloqueo por intentos (mismo patron que el ciudadano)
+    router.py                  /admin/login, /admin/salir, y las 5 pantallas protegidas
+    templates/                 base_admin.html (reusa estilos.css del portal) + una
+                                plantilla por pantalla (resumen, ciudadanos,
+                                transferencias, bandeja_salida, auditoria)
 alembic/versions/              migraciones
 docs/especificacion.md         la especificación completa
 scripts/probar_govcarpeta.py   prueba de humo contra la API real

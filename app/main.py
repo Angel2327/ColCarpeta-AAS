@@ -34,6 +34,7 @@ from app.errors import (
     manejar_error_de_validacion,
     manejar_error_no_previsto,
 )
+from app.admin.router import router as admin_router
 from app.documentos.entidades import router as entidades_router
 from app.documentos.router import router as documentos_router
 from app.identidad.perfil import router as perfil_router
@@ -128,6 +129,11 @@ app.include_router(portal_perfil_router)
 app.include_router(portal_traslado_router)
 app.include_router(portal_primer_acceso_router)
 app.include_router(portal_router_legado)
+# Consola de administracion (RF32-RF37, CU-22): bajo /admin, fuera del esquema OpenAPI
+# (declarado include_in_schema=False en el propio router) y sin ningun enlace desde el
+# portal (ver AD-12: un enlace, aunque discreto, anunciaria la ruta a cualquier
+# ciudadano). La consola si enlaza de vuelta al portal desde su cabecera.
+app.include_router(admin_router)
 
 
 @app.get("/static/site.webmanifest", include_in_schema=False)

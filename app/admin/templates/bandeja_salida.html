@@ -1,0 +1,33 @@
+{% extends "base_admin.html" %}
+{% block titulo %}Bandeja de salida{% endblock %}
+{% block contenido %}
+<h1>Bandeja de salida</h1>
+<p class="nota-pequena">{{ total }} entrada{{ "s" if total != 1 else "" }}.</p>
+
+{% if items %}
+<div class="tabla-envoltorio">
+<table class="tabla">
+  <thead>
+    <tr><th>Operación</th><th>Estado</th><th>Intentos</th><th>Último error</th><th>Próximo intento</th></tr>
+  </thead>
+  <tbody>
+    {% for o in items %}
+    <tr>
+      <td>{{ o.operacion }}</td>
+      <td>{{ o.estado }}</td>
+      <td>{{ o.intentos }}</td>
+      <td>{{ o.ultimo_error or "—" }}</td>
+      <td>{{ o.proximo_intento.strftime("%Y-%m-%d %H:%M") if o.proximo_intento else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<nav class="paginacion" aria-label="Paginación de la bandeja de salida">
+  {% if page > 1 %}<a href="{{ url_pagina(page - 1) }}">« Anterior</a>{% else %}<span></span>{% endif %}
+  {% if (page * size) < total %}<a href="{{ url_pagina(page + 1) }}">Siguiente »</a>{% endif %}
+</nav>
+{% else %}
+<p class="vacio">La bandeja de salida está vacía.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,55 @@
+{% extends "base_admin.html" %}
+{% block titulo %}Resumen{% endblock %}
+{% block contenido %}
+<h1>Resumen</h1>
+
+<div class="resumen-grid">
+  <section class="tarjeta" aria-labelledby="titulo-ciudadanos">
+    <h2 id="titulo-ciudadanos">Ciudadanos por estado</h2>
+    <dl class="detalle">
+      {% for estado, total in resumen.ciudadanos_por_estado.items() %}
+      <dt>{{ estado }}</dt>
+      <dd>{{ total }}</dd>
+      {% else %}
+      <dd>Sin ciudadanos registrados.</dd>
+      {% endfor %}
+    </dl>
+  </section>
+
+  <section class="tarjeta" aria-labelledby="titulo-documentos">
+    <h2 id="titulo-documentos">Documentos por estado</h2>
+    <dl class="detalle">
+      {% for estado, total in resumen.documentos_por_estado.items() %}
+      <dt>{{ estado }}</dt>
+      <dd>{{ total }}</dd>
+      {% else %}
+      <dd>Sin documentos.</dd>
+      {% endfor %}
+    </dl>
+  </section>
+
+  <section class="tarjeta" aria-labelledby="titulo-transferencias">
+    <h2 id="titulo-transferencias">Transferencias salientes por estado</h2>
+    <dl class="detalle">
+      {% for estado, total in resumen.transferencias_por_estado.items() %}
+      <dt>{{ estado }}</dt>
+      <dd>{{ total }}</dd>
+      {% else %}
+      <dd>Sin transferencias salientes todavía.</dd>
+      {% endfor %}
+    </dl>
+    <p class="nota-pequena">Solo cuenta transferencias salientes (CU-03): una transferencia entrante (CU-16) no tiene tabla propia. Ver "Transferencias" para las dos juntas.</p>
+  </section>
+
+  <section class="tarjeta" aria-labelledby="titulo-outbox">
+    <h2 id="titulo-outbox">Bandeja de salida</h2>
+    <dl class="detalle">
+      <dt>Pendientes</dt>
+      <dd>{{ resumen.outbox_pendientes }}</dd>
+      <dt>Fallidas</dt>
+      <dd>{{ resumen.outbox_fallidas }}</dd>
+    </dl>
+    <p class="nota-pequena">"Pendientes" incluye lo que espera turno y lo que ya está en proceso.</p>
+  </section>
+</div>
+{% endblock %}

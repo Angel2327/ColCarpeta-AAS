@@ -107,6 +107,14 @@ class Config(BaseSettings):
     # periodico solo cubre a alguien que se queda quieto en la misma pantalla.
     notificaciones_contador_intervalo_segundos: int = 600
 
+    # consola de administracion (RF32-RF37, CU-19): sin modelo de usuarios, una sola
+    # credencial en variable de entorno. Vacio por defecto = consola inutilizable hasta
+    # configurarla explicitamente (nunca un "funciona" falso con un hash vacio, mismo
+    # patron que operadores_excluidos). El hash se genera con
+    # app.identidad.seguridad.hash_password y se verifica con verificar_password, la
+    # misma funcion que ya usa el ciudadano -- nunca se compara la clave en claro.
+    admin_password_hash: str = ""
+
     @field_validator("jwt_llave_privada", "jwt_llave_publica")
     @classmethod
     def _normalizar_pem(cls, valor: str) -> str:

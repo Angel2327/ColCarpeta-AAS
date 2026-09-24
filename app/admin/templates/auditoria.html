@@ -1,0 +1,57 @@
+{% extends "base_admin.html" %}
+{% block titulo %}Auditoría{% endblock %}
+{% block contenido %}
+<h1>Auditoría</h1>
+
+<form method="get" action="/admin/auditoria" class="filtros">
+  <div class="campo">
+    <label for="cedula_f">Cédula (recurso)</label>
+    <input type="text" id="cedula_f" name="cedula" value="{{ filtros.cedula }}">
+  </div>
+  <div class="campo">
+    <label for="accion_f">Acción contiene</label>
+    <input type="text" id="accion_f" name="accion" value="{{ filtros.accion }}">
+  </div>
+  <div class="campo">
+    <label for="desde_f">Desde</label>
+    <input type="date" id="desde_f" name="desde" value="{{ filtros.desde }}">
+  </div>
+  <div class="campo">
+    <label for="hasta_f">Hasta</label>
+    <input type="date" id="hasta_f" name="hasta" value="{{ filtros.hasta }}">
+  </div>
+  <div class="acciones">
+    <button type="submit" class="boton boton--secundario">Filtrar</button>
+    <a class="boton boton--secundario" href="/admin/auditoria">Limpiar filtros</a>
+  </div>
+</form>
+
+<p class="nota-pequena">{{ total }} evento{{ "s" if total != 1 else "" }}. No se muestra el detalle de cada evento: puede contener datos que esta consola no expone.</p>
+
+{% if items %}
+<div class="tabla-envoltorio">
+<table class="tabla">
+  <thead>
+    <tr><th>Momento</th><th>Actor</th><th>Acción</th><th>Recurso</th><th>Correlación</th></tr>
+  </thead>
+  <tbody>
+    {% for a in items %}
+    <tr>
+      <td>{{ a.momento.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+      <td>{{ a.actor }}</td>
+      <td>{{ a.accion }}</td>
+      <td>{{ a.recurso or "—" }}</td>
+      <td>{{ a.correlation_id or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<nav class="paginacion" aria-label="Paginación de auditoría">
+  {% if page > 1 %}<a href="{{ url_pagina(page - 1) }}">« Anterior</a>{% else %}<span></span>{% endif %}
+  {% if (page * size) < total %}<a href="{{ url_pagina(page + 1) }}">Siguiente »</a>{% endif %}
+</nav>
+{% else %}
+<p class="vacio">No hay eventos que coincidan con estos filtros.</p>
+{% endif %}
+{% endblock %}

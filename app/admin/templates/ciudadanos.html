@@ -1,0 +1,46 @@
+{% extends "base_admin.html" %}
+{% block titulo %}Ciudadanos{% endblock %}
+{% block contenido %}
+<h1>Ciudadanos</h1>
+
+<form method="get" action="/admin/ciudadanos" class="filtros">
+  <div class="campo">
+    <label for="cedula_f">Cédula contiene</label>
+    <input type="text" id="cedula_f" name="cedula" value="{{ cedula }}">
+  </div>
+  <div class="acciones">
+    <button type="submit" class="boton boton--secundario">Buscar</button>
+    <a class="boton boton--secundario" href="/admin/ciudadanos">Limpiar</a>
+  </div>
+</form>
+
+<p class="nota-pequena">{{ total }} ciudadano{{ "s" if total != 1 else "" }}.</p>
+
+{% if items %}
+<div class="tabla-envoltorio">
+<table class="tabla">
+  <thead>
+    <tr><th>Cédula</th><th>Nombre</th><th>Estado</th><th>Registrado</th><th>Documentos</th><th>Cuota usada</th></tr>
+  </thead>
+  <tbody>
+    {% for c in items %}
+    <tr>
+      <td>{{ c.id }}</td>
+      <td>{{ c.nombre }}</td>
+      <td>{{ c.estado }}</td>
+      <td>{{ c.creado_en.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td>{{ c.documentos }}</td>
+      <td>{{ (c.usado_bytes / 1048576) | round(1) }} MB</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<nav class="paginacion" aria-label="Paginación de ciudadanos">
+  {% if page > 1 %}<a href="{{ url_pagina(page - 1) }}">« Anterior</a>{% else %}<span></span>{% endif %}
+  {% if (page * size) < total %}<a href="{{ url_pagina(page + 1) }}">Siguiente »</a>{% endif %}
+</nav>
+{% else %}
+<p class="vacio">No hay ciudadanos que coincidan.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,36 @@
+{% extends "base_admin.html" %}
+{% block titulo %}Transferencias{% endblock %}
+{% block contenido %}
+<h1>Transferencias</h1>
+<p class="nota-pequena">Entrantes y salientes en una sola vista. El operador de una transferencia entrante se resuelve de forma heurística (por el host de la URL de confirmación que trajo, contra el directorio del MinTIC): el ecosistema no tiene autenticación real entre operadores.</p>
+
+<p class="nota-pequena">{{ total }} transferencia{{ "s" if total != 1 else "" }}.</p>
+
+{% if items %}
+<div class="tabla-envoltorio">
+<table class="tabla">
+  <thead>
+    <tr><th>Dirección</th><th>Operador</th><th>Estado</th><th>Enviada</th><th>Confirmada</th><th>Purga programada</th></tr>
+  </thead>
+  <tbody>
+    {% for t in items %}
+    <tr>
+      <td>{{ t.direccion }}</td>
+      <td>{{ t.operador }}</td>
+      <td>{{ t.estado }}</td>
+      <td>{{ t.fecha_envio.strftime("%Y-%m-%d %H:%M") }}</td>
+      <td>{{ t.fecha_confirmacion.strftime("%Y-%m-%d %H:%M") if t.fecha_confirmacion else "—" }}</td>
+      <td>{{ t.purgar_despues_de.strftime("%Y-%m-%d %H:%M") if t.purgar_despues_de else "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<nav class="paginacion" aria-label="Paginación de transferencias">
+  {% if page > 1 %}<a href="{{ url_pagina(page - 1) }}">« Anterior</a>{% else %}<span></span>{% endif %}
+  {% if (page * size) < total %}<a href="{{ url_pagina(page + 1) }}">Siguiente »</a>{% endif %}
+</nav>
+{% else %}
+<p class="vacio">No hay transferencias todavía.</p>
+{% endif %}
+{% endblock %}

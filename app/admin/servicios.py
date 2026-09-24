@@ -1,0 +1,414 @@
+"""Capa de servicios de la consola de administracion (RF32-RF37, CU-22): consultas de
+solo lectura sobre las tablas que ya existen. Ninguna funcion de este modulo escribe,
+borra ni dispara una operacion de negocio (ver la AD nueva en docs/especificacion.md) --
+las unicas escrituras son las propias de auditoria (quien inicio sesion, quien vio que
+pantalla y cuando).
+
+Nunca se expone el contenido de un documento, solo sus metadatos -- ni un enlace de
+descarga ni una URL firmada salen de aqui. Tampoco se expone ningun secreto (hash de
+contrasena, secreto TOTP, token de primer acceso, clave de una entidad emisora): los
+dataclass de este modulo declaran explicitamente los campos que sí se muestran, nunca
+pasan un modelo de SQLAlchemy completo a una plantilla.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
+
+from sqlalchemy import String, cast, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import get_config
+from app.db import SessionLocal
+from app.identidad.seguridad import verificar_password
+from app.models import (
+    Auditoria,
+    Ciudadano,
+    Documento,
+    EstadoDocumento,
+    EstadoOutbox,
+    OperadorCache,
+    Outbox,
+    Transferencia,
+)
+
+TAMANO_PAGINA = 20
+
+# Unica accion que cuenta para el bloqueo de la consola: a diferencia del login del
+# ciudadano (app.identidad.servicios.ACCIONES_FALLO_LOGIN), aqui no hay un segundo
+# factor que pueda fallar aparte -- una sola credencial global.
+ACCION_FALLO_ADMIN = "admin.credenciales_invalidas"
+
+
+# --- acceso: login con el mismo patron de bloqueo por origen que el ciudadano -------
+
+
+async def _intentos_fallidos_por_origen(session: AsyncSession, *, origen: str, desde: datetime) -> int:
+    r = await session.execute(
+        select(func.count()).where(
+            Auditoria.accion == ACCION_FALLO_ADMIN,
+            Auditoria.momento >= desde,
+            Auditoria.detalle["origen"].astext == origen,
+        )
+    )
+    return r.scalar_one()
+
+
+async def registrar_acceso(
+    *, accion: str, origen: str, correlation_id: str | None, detalle: dict | None = None
+) -> None:
+    """Deja constancia en `auditoria` de un evento de la consola -- login, bloqueo, o
+    una pantalla vista. "El que vigila tambien se registra": no hay pantalla ni intento
+    de acceso que no quede aqui."""
+    async with SessionLocal() as session:
+        session.add(
+            Auditoria(
+                actor="admin",
+                accion=accion,
+                correlation_id=correlation_id,
+                detalle={"origen": origen, **(detalle or {})},
+            )
+        )
+        await session.commit()
+
+
+async def verificar_credenciales_admin(*, password: str, origen: str, correlation_id: str | None) -> str:
+    """Valida la contraseña unica de la consola contra `ADMIN_PASSWORD_HASH`, con el
+    mismo bloqueo por intentos fallidos que ya usa el inicio de sesion del ciudadano
+    (`app.identidad.servicios._intentos_fallidos`), aqui solo por origen -- no hay una
+    cedula que acompañe una credencial global. Sin este limite, la consola seria un
+    enumerador de ciudadanos para quien adivine la clave a fuerza bruta.
+
+    Devuelve "ok", "bloqueado" o "invalido".
+    """
+    cfg = get_config()
+    async with SessionLocal() as session:
+        desde = datetime.now(timezone.utc) - timedelta(minutes=cfg.intentos_login_ventana_minutos)
+        fallos = await _intentos_fallidos_por_origen(session, origen=origen, desde=desde)
+
+    if fallos >= cfg.intentos_login_maximos:
+        await registrar_acceso(accion="admin.bloqueado", origen=origen, correlation_id=correlation_id)
+        return "bloqueado"
+
+    # ADMIN_PASSWORD_HASH vacio por defecto: `or None` hace que verificar_password lo
+    # trate igual que un ciudadano sin contrasena (CU-16) -- nunca coincide, la consola
+    # queda inutilizable hasta que se configure la variable de verdad.
+    if not verificar_password(cfg.admin_password_hash or None, password):
+        await registrar_acceso(accion=ACCION_FALLO_ADMIN, origen=origen, correlation_id=correlation_id)
+        return "invalido"
+
+    await registrar_acceso(accion="admin.sesion_exitosa", origen=origen, correlation_id=correlation_id)
+    return "ok"
+
+
+# --- 1. resumen ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Resumen:
+    ciudadanos_por_estado: dict[str, int]
+    documentos_por_estado: dict[str, int]
+    transferencias_por_estado: dict[str, int]
+    outbox_pendientes: int
+    outbox_fallidas: int
+
+
+async def obtener_resumen() -> Resumen:
+    async with SessionLocal() as session:
+        r1 = await session.execute(select(Ciudadano.estado, func.count()).group_by(Ciudadano.estado))
+        ciudadanos = {estado.value: total for estado, total in r1.all()}
+
+        r2 = await session.execute(select(Documento.estado, func.count()).group_by(Documento.estado))
+        documentos = {estado.value: total for estado, total in r2.all()}
+
+        r3 = await session.execute(select(Transferencia.estado, func.count()).group_by(Transferencia.estado))
+        transferencias = {estado.value: total for estado, total in r3.all()}
+
+        # "Pendientes" agrupa PENDIENTE y EN_PROCESO: el pedido solo distinguia
+        # pendientes de fallidas, no las tres categorias por separado.
+        r4 = await session.execute(
+            select(func.count()).where(Outbox.estado.in_((EstadoOutbox.PENDIENTE, EstadoOutbox.EN_PROCESO)))
+        )
+        pendientes = r4.scalar_one()
+
+        r5 = await session.execute(select(func.count()).where(Outbox.estado == EstadoOutbox.FALLIDO))
+        fallidas = r5.scalar_one()
+
+    return Resumen(
+        ciudadanos_por_estado=ciudadanos,
+        documentos_por_estado=documentos,
+        transferencias_por_estado=transferencias,
+        outbox_pendientes=pendientes,
+        outbox_fallidas=fallidas,
+    )
+
+
+# --- 2. ciudadanos ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FilaCiudadano:
+    id: int
+    nombre: str
+    estado: str
+    creado_en: datetime
+    documentos: int
+    usado_bytes: int
+
+
+async def listar_ciudadanos(*, cedula: str | None, page: int) -> tuple[list[FilaCiudadano], int, int]:
+    page = max(page, 1)
+    condiciones = []
+    if cedula:
+        # BigInteger, no admite ILIKE directo: se compara como texto para permitir
+        # busqueda por coincidencia parcial (como el resto de filtros del portal).
+        condiciones.append(cast(Ciudadano.id, String).like(f"%{cedula}%"))
+
+    async with SessionLocal() as session:
+        total = (await session.execute(select(func.count()).select_from(Ciudadano).where(*condiciones))).scalar_one()
+        resultado = await session.execute(
+            select(Ciudadano)
+            .where(*condiciones)
+            .order_by(Ciudadano.creado_en.desc())
+            .offset((page - 1) * TAMANO_PAGINA)
+            .limit(TAMANO_PAGINA)
+        )
+        pagina_ciudadanos = list(resultado.scalars().all())
+        ids = [c.id for c in pagina_ciudadanos]
+
+        conteo_documentos: dict[int, int] = {}
+        bytes_usados: dict[int, int] = {}
+        if ids:
+            rd = await session.execute(
+                select(Documento.ciudadano_id, func.count())
+                .where(Documento.ciudadano_id.in_(ids))
+                .group_by(Documento.ciudadano_id)
+            )
+            conteo_documentos = dict(rd.all())
+
+            # Mismo calculo de cuota que el resto de la aplicacion (ver
+            # app.identidad.perfil_servicios._usado_bytes): solo temporal y ACTIVO.
+            rb = await session.execute(
+                select(Documento.ciudadano_id, func.coalesce(func.sum(Documento.tamano_bytes), 0))
+                .where(
+                    Documento.ciudadano_id.in_(ids),
+                    Documento.certificado.is_(False),
+                    Documento.estado == EstadoDocumento.ACTIVO,
+                )
+                .group_by(Documento.ciudadano_id)
+            )
+            bytes_usados = dict(rb.all())
+
+    filas = [
+        FilaCiudadano(
+            id=c.id,
+            nombre=c.nombre,
+            estado=c.estado.value,
+            creado_en=c.creado_en,
+            documentos=conteo_documentos.get(c.id, 0),
+            usado_bytes=bytes_usados.get(c.id, 0),
+        )
+        for c in pagina_ciudadanos
+    ]
+    return filas, total, page
+
+
+# --- 3. transferencias, entrantes y salientes en una sola vista ---------------------
+
+
+@dataclass(frozen=True)
+class FilaTransferencia:
+    direccion: str  # "SALIENTE" | "ENTRANTE"
+    operador: str
+    estado: str
+    fecha_envio: datetime
+    fecha_confirmacion: datetime | None
+    purgar_despues_de: datetime | None
+
+
+_ESTADO_ENTRANTE = {
+    EstadoOutbox.FALLIDO: "RECHAZADA",
+    EstadoOutbox.COMPLETADO: "RECIBIDA",
+}
+
+
+def _resolver_operador_por_confirm_api(confirm_api: str | None, operadores: list[OperadorCache]) -> str:
+    """CU-16 no persiste la identidad del operador de origen en ninguna tabla propia
+    (solo queda en el `confirm_api` que trae la transferencia, dentro del payload de
+    `Outbox`): se resuelve aqui de forma heuristica, comparando el host de esa URL
+    contra el host de `transfer_api_url` de cada operador del directorio -- el mismo
+    tipo de coincidencia por host que ya usa `app.interoperabilidad.transferencias`
+    para verificar el origen de una confirmacion, pero reescrita aqui de forma
+    independiente: esta es una consulta de reporte, no querer acoplar un modulo de
+    solo lectura a un chequeo de seguridad que vive en otro lado por una razon
+    distinta. Nunca es una identidad confirmada -- el ecosistema no tiene
+    autenticacion real entre operadores (CLAUDE.md, "trampa 6")."""
+    if not confirm_api:
+        return "Desconocido"
+    host = urlparse(confirm_api).hostname
+    if not host:
+        return "Desconocido"
+    for operador in operadores:
+        if not operador.transfer_api_url:
+            continue
+        host_operador = urlparse(operador.transfer_api_url.strip()).hostname
+        if host_operador and host_operador == host:
+            return operador.nombre
+    return f"Desconocido ({host})"
+
+
+async def listar_transferencias(*, page: int) -> tuple[list[FilaTransferencia], int]:
+    """Une dos fuentes de datos de forma muy distinta entre si -- la tabla
+    `transferencia` (solo transferencias salientes, CU-03) y las filas de `outbox` con
+    operacion `receiveTransferCitizen` (la unica huella de una transferencia entrante,
+    CU-16, que no tiene tabla propia) -- por eso la union, el orden y la paginacion se
+    resuelven en Python despues de traer ambas listas completas, en vez de una sola
+    consulta SQL. No se toco ningun modelo ni la logica de negocio de CU-03/CU-16 para
+    esto: es una lectura por encima de lo que ya existe."""
+    page = max(page, 1)
+    async with SessionLocal() as session:
+        operadores = list((await session.execute(select(OperadorCache))).scalars().all())
+        nombres_operadores = {op.id: op.nombre for op in operadores}
+
+        salientes = list(
+            (await session.execute(select(Transferencia).order_by(Transferencia.enviada_en.desc()))).scalars().all()
+        )
+        entrantes = list(
+            (
+                await session.execute(
+                    select(Outbox)
+                    .where(Outbox.operacion == "receiveTransferCitizen")
+                    .order_by(Outbox.creado_en.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    filas: list[FilaTransferencia] = []
+    for t in salientes:
+        filas.append(
+            FilaTransferencia(
+                direccion="SALIENTE",
+                operador=nombres_operadores.get(t.operador_destino_id, t.operador_destino_id),
+                estado=t.estado.value,
+                fecha_envio=t.enviada_en,
+                fecha_confirmacion=t.confirmada_en,
+                purgar_despues_de=t.purgar_despues_de,
+            )
+        )
+    for o in entrantes:
+        confirm_api = (o.payload or {}).get("confirm_api")
+        filas.append(
+            FilaTransferencia(
+                direccion="ENTRANTE",
+                operador=_resolver_operador_por_confirm_api(confirm_api, operadores),
+                estado=_ESTADO_ENTRANTE.get(o.estado, "EN_PROCESO"),
+                fecha_envio=o.creado_en,
+                fecha_confirmacion=None,
+                purgar_despues_de=None,
+            )
+        )
+
+    filas.sort(key=lambda f: f.fecha_envio, reverse=True)
+    total = len(filas)
+    inicio = (page - 1) * TAMANO_PAGINA
+    return filas[inicio : inicio + TAMANO_PAGINA], total
+
+
+# --- 4. bandeja de salida ------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FilaOutbox:
+    id: int
+    operacion: str
+    estado: str
+    intentos: int
+    ultimo_error: str | None
+    proximo_intento: datetime | None
+    creado_en: datetime
+
+
+async def listar_outbox(*, page: int) -> tuple[list[FilaOutbox], int]:
+    page = max(page, 1)
+    async with SessionLocal() as session:
+        total = (await session.execute(select(func.count()).select_from(Outbox))).scalar_one()
+        resultado = await session.execute(
+            select(Outbox).order_by(Outbox.creado_en.desc()).offset((page - 1) * TAMANO_PAGINA).limit(TAMANO_PAGINA)
+        )
+        pagina_outbox = list(resultado.scalars().all())
+
+    filas = [
+        FilaOutbox(
+            id=o.id,
+            operacion=o.operacion,
+            estado=o.estado.value,
+            intentos=o.intentos,
+            ultimo_error=o.ultimo_error,
+            proximo_intento=o.proximo_intento,
+            creado_en=o.creado_en,
+        )
+        for o in pagina_outbox
+    ]
+    return filas, total
+
+
+# --- 5. auditoria ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FilaAuditoria:
+    id: int
+    momento: datetime
+    actor: str
+    accion: str
+    recurso: str | None
+    correlation_id: str | None
+
+
+async def listar_auditoria(
+    *, cedula: str | None, accion: str | None, desde: datetime | None, hasta: datetime | None, page: int
+) -> tuple[list[FilaAuditoria], int]:
+    """Deliberadamente no devuelve `Auditoria.detalle`: auditar cada punto del proyecto
+    que escribe ahi para garantizar que ninguno registra algo sensible es mas riesgoso
+    que simplemente no mostrarlo nunca en una consola de solo lectura -- ver la AD
+    nueva en docs/especificacion.md."""
+    page = max(page, 1)
+    condiciones = []
+    if cedula:
+        condiciones.append(Auditoria.recurso.ilike(f"%{cedula}%"))
+    if accion:
+        condiciones.append(Auditoria.accion.ilike(f"%{accion}%"))
+    if desde:
+        condiciones.append(Auditoria.momento >= desde)
+    if hasta:
+        condiciones.append(Auditoria.momento <= hasta)
+
+    async with SessionLocal() as session:
+        total = (
+            await session.execute(select(func.count()).select_from(Auditoria).where(*condiciones))
+        ).scalar_one()
+        resultado = await session.execute(
+            select(Auditoria)
+            .where(*condiciones)
+            .order_by(Auditoria.momento.desc())
+            .offset((page - 1) * TAMANO_PAGINA)
+            .limit(TAMANO_PAGINA)
+        )
+        pagina_auditoria = list(resultado.scalars().all())
+
+    filas = [
+        FilaAuditoria(
+            id=a.id,
+            momento=a.momento,
+            actor=a.actor,
+            accion=a.accion,
+            recurso=a.recurso,
+            correlation_id=a.correlation_id,
+        )
+        for a in pagina_auditoria
+    ]
+    return filas, total

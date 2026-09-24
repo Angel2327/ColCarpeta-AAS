@@ -1,0 +1,15 @@
+{% extends "base_admin.html" %}
+{% block titulo %}Iniciar sesión{% endblock %}
+{% block main_extra_class %}contenedor--estrecho{% endblock %}
+{% block contenido %}
+<h1>Consola de administración</h1>
+<section class="tarjeta">
+  <form method="post" action="/admin/login" novalidate>
+    <div class="campo">
+      <label for="password">Contraseña</label>
+      <input type="password" id="password" name="password" required autofocus>
+    </div>
+    <button type="submit">Entrar</button>
+  </form>
+</section>
+{% endblock %}
