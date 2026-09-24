@@ -59,6 +59,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.interoperabilidad.govcarpeta import CentralizadorNoDisponible, GovCarpeta
 from app.interoperabilidad.operadores import OperadorNoDisponible
+from app.interoperabilidad.transferencias import resolver_operador_por_host
 from app.models import (
     Auditoria,
     Ciudadano,
@@ -69,6 +70,7 @@ from app.models import (
     EstadoOutbox,
     EstadoTransferencia,
     OperadorCache,
+    OrigenCiudadano,
     Outbox,
     Transferencia,
 )
@@ -191,6 +193,28 @@ def _parsear_fecha(valor: Any) -> datetime | None:
     except ValueError:
         return None
     return fecha if fecha.tzinfo else fecha.replace(tzinfo=timezone.utc)
+
+
+async def _resolver_operador_origen(session: AsyncSession, confirm_api: str | None) -> tuple[str | None, str | None]:
+    """Deduce el operador de origen de una transferencia entrante a partir del host de
+    `confirmAPI`, comparado contra `operador_cache` en este mismo instante -- el
+    formato de transferencia acordado entre operadores no incluye un identificador de
+    origen (docs/especificacion.md, "Interoperabilidad entre operadores"). Devuelve
+    `(operador_id, operador_nombre)`, resuelto una sola vez en el momento de la
+    recepcion y guardado como fotografia (ver `Ciudadano.origen_operador_id`) -- nunca
+    una relacion viva hacia `operador_cache`. Ambos quedan en `None` si el host no
+    coincide con ningun operador conocido en este instante: no se inventa uno.
+
+    La coincidencia de host en si vive en `app.interoperabilidad.transferencias
+    .resolver_operador_por_host`, compartida con `app.admin.servicios` (pantalla de
+    Transferencias): dos implementaciones de la misma pregunta ("que operador esta
+    detras de esta URL") podian divergir con el tiempo y mostrar operadores distintos
+    para el mismo dato -- unificadas para que eso sea imposible."""
+    operadores = list((await session.execute(select(OperadorCache))).scalars().all())
+    operador = resolver_operador_por_host(operadores, confirm_api)
+    if operador is None:
+        return None, None
+    return operador.id, operador.nombre
 
 
 async def _recibir_transferencia(gov: GovCarpeta, payload: dict) -> None:
@@ -328,6 +352,8 @@ async def _recibir_transferencia(gov: GovCarpeta, payload: dict) -> None:
                         f"ColCarpeta; no se puede recibir a {cedula} con esa direccion (colision real "
                         "entre dos ciudadanos distintos, AD-10 no permite generarle una alterna a ninguno)"
                     )
+            confirm_api = payload.get("confirm_api")
+            operador_origen_id, operador_origen_nombre = await _resolver_operador_origen(session, confirm_api)
             session.add(
                 Ciudadano(
                     id=cedula,
@@ -339,6 +365,10 @@ async def _recibir_transferencia(gov: GovCarpeta, payload: dict) -> None:
                     password_hash=None,
                     estado=EstadoCiudadano.PENDIENTE_CENTRALIZADOR,
                     identidad_verificada=True,
+                    origen=OrigenCiudadano.TRANSFERENCIA,
+                    origen_confirm_api=confirm_api,
+                    origen_operador_id=operador_origen_id,
+                    origen_operador_nombre=operador_origen_nombre,
                 )
             )
             if email_generado:

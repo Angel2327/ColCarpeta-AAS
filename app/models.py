@@ -77,6 +77,14 @@ class EstadoEntidadEmisora(str, enum.Enum):
     REVOCADA = "REVOCADA"
 
 
+class OrigenCiudadano(str, enum.Enum):
+    """Como llego este ciudadano a ColCarpeta (RF32-RF37, consola de administracion:
+    AD-12). Ver `Ciudadano.origen` para la politica de honestidad del dato."""
+
+    REGISTRO_DIRECTO = "REGISTRO_DIRECTO"
+    TRANSFERENCIA = "TRANSFERENCIA"
+
+
 class Ciudadano(Base):
     __tablename__ = "ciudadano"
 
@@ -113,6 +121,25 @@ class Ciudadano(Base):
         default=EstadoCiudadano.PENDIENTE_VERIFICACION,
     )
     identidad_verificada: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Fijado una sola vez, al crear la fila (CU-01 o CU-16); nunca se modifica despues.
+    # NULL para todo ciudadano que ya existia antes de esta columna -- no se adivina, la
+    # consola de administracion lo muestra como "desconocido" (app.admin.servicios), que
+    # es la verdad: no hay forma de reconstruir ese dato en retrospectiva.
+    origen: Mapped[OrigenCiudadano | None] = mapped_column(PgEnum(OrigenCiudadano, name="origen_ciudadano"))
+    # Los tres campos siguientes solo tienen valor cuando origen == TRANSFERENCIA. El
+    # formato de transferencia acordado entre operadores no incluye un identificador
+    # del operador de origen (docs/especificacion.md, "Interoperabilidad entre
+    # operadores"): origen_operador_id/origen_operador_nombre son una DEDUCCION a partir
+    # del host de origen_confirm_api contra operador_cache, resuelta una sola vez en el
+    # momento de la recepcion (app.interoperabilidad.outbox._recibir_transferencia) y
+    # guardada como fotografia de ese instante -- nunca como una relacion viva hacia
+    # operador_cache, cuyo nombre puede cambiar despues en un refresco del directorio.
+    # Sin resolucion posible (host que no coincide con ningun operador conocido en ese
+    # momento), ambos quedan en NULL y origen_confirm_api es lo unico que sobrevive
+    # como rastro de lo que en verdad llego.
+    origen_confirm_api: Mapped[str | None] = mapped_column(String(500))
+    origen_operador_id: Mapped[str | None] = mapped_column(String(64))
+    origen_operador_nombre: Mapped[str | None] = mapped_column(String(255))
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # passive_deletes=True: mismo motivo que en `auditorias` mas abajo. documento.ciudadano_id

@@ -8,6 +8,15 @@
     <label for="cedula_f">Cédula contiene</label>
     <input type="text" id="cedula_f" name="cedula" value="{{ cedula }}">
   </div>
+  <div class="campo">
+    <label for="origen_f">Origen</label>
+    <select id="origen_f" name="origen">
+      <option value="" {{ "selected" if not origen else "" }}>Cualquiera</option>
+      <option value="REGISTRO_DIRECTO" {{ "selected" if origen == "REGISTRO_DIRECTO" else "" }}>Registro directo</option>
+      <option value="TRANSFERENCIA" {{ "selected" if origen == "TRANSFERENCIA" else "" }}>Transferencia</option>
+      <option value="DESCONOCIDO" {{ "selected" if origen == "DESCONOCIDO" else "" }}>Desconocido</option>
+    </select>
+  </div>
   <div class="acciones">
     <button type="submit" class="boton boton--secundario">Buscar</button>
     <a class="boton boton--secundario" href="/admin/ciudadanos">Limpiar</a>
@@ -20,7 +29,7 @@
 <div class="tabla-envoltorio">
 <table class="tabla">
   <thead>
-    <tr><th>Cédula</th><th>Nombre</th><th>Estado</th><th>Registrado</th><th>Documentos</th><th>Cuota usada</th></tr>
+    <tr><th>Cédula</th><th>Nombre</th><th>Estado</th><th>Origen</th><th>Operador destino</th><th>Registrado</th><th>Documentos</th><th>Cuota usada</th></tr>
   </thead>
   <tbody>
     {% for c in items %}
@@ -28,6 +37,8 @@
       <td>{{ c.id }}</td>
       <td>{{ c.nombre }}</td>
       <td>{{ c.estado }}</td>
+      <td>{{ c.origen }}</td>
+      <td>{{ c.operador_destino or "—" }}</td>
       <td>{{ c.creado_en.strftime("%Y-%m-%d %H:%M") }}</td>
       <td>{{ c.documentos }}</td>
       <td>{{ (c.usado_bytes / 1048576) | round(1) }} MB</td>

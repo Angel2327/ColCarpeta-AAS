@@ -32,7 +32,7 @@ from app.identidad.seguridad import hash_password, validar_formato_password, ver
 from app.identidad.token import emitir_token
 from app.identidad.totp import verificar_codigo
 from app.interoperabilidad import CentralizadorNoDisponible, validar_ciudadano
-from app.models import Auditoria, Ciudadano, EstadoCiudadano, EstadoTotp, Outbox
+from app.models import Auditoria, Ciudadano, EstadoCiudadano, EstadoTotp, OrigenCiudadano, Outbox
 
 REINTENTOS_SINCRONOS = 2
 ESPERA_ENTRE_REINTENTOS_SEGUNDOS = 1.0
@@ -125,6 +125,7 @@ async def registrar_ciudadano(
                         password_hash=hash_password(solicitud.password),
                         estado=EstadoCiudadano.PENDIENTE_VERIFICACION,
                         identidad_verificada=False,
+                        origen=OrigenCiudadano.REGISTRO_DIRECTO,
                     )
                 )
             session.add(
@@ -222,6 +223,7 @@ async def registrar_ciudadano(
                 email_personal=str(solicitud.email_personal),
                 telefono=solicitud.telefono,
                 password_hash=hash_password(solicitud.password),
+                origen=OrigenCiudadano.REGISTRO_DIRECTO,
             )
             session.add(ciudadano)
 

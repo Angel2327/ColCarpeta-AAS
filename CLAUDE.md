@@ -1373,6 +1373,168 @@ ningún control de la consola. Probado en Docker: el diálogo de confirmación a
 cabecera de la consola; el portal ya no tiene ningún enlace hacia `/admin` en ningún
 lado.
 
+**Origen del ciudadano como dato propio, con migración real aplicada el 2026-09-24.**
+Cuatro columnas nuevas en `ciudadano` -- `origen` (`REGISTRO_DIRECTO` | `TRANSFERENCIA`,
+enum `origen_ciudadano`), `origen_confirm_api`, `origen_operador_id`,
+`origen_operador_nombre` -- fijadas una sola vez al crear la fila y nunca modificadas
+después (migración `b1fb337fb116`, generada con `alembic revision --autogenerate`
+contra la base real de Supabase y **aplicada a esa misma base real** con
+`alembic upgrade head`, siguiendo el patrón ya usado en toda la sesión). Los
+ciudadanos que ya existían quedan con `origen` en `NULL` -- deliberadamente sin
+backfill, nunca adivinado.
+
+Se fija en dos lugares, cada uno responsable de su propio origen: `REGISTRO_DIRECTO` en
+`app.identidad.servicios.registrar_ciudadano` (CU-01, en los dos puntos donde se crea
+la fila -- el camino básico y la reserva en `PENDIENTE_VERIFICACION` de la E3; la rama
+que reutiliza un `existente` no lo toca, porque ya lo tiene desde su creación).
+`TRANSFERENCIA` en `app.interoperabilidad.outbox._recibir_transferencia` (CU-16, paso
+2, el único lugar donde se crea un `Ciudadano` recibido), junto con la nueva función
+`_resolver_operador_origen`: compara el host de `confirmAPI` contra `operador_cache` en
+ese mismo instante y guarda `_id` y nombre como fotografía -- nunca una relación viva
+hacia `operador_cache`, cuyo nombre puede cambiar en un refresco posterior. Ninguna
+recuperación (CU-03/CU-16 fallidos, que reutilizan `registerCitizen` vía
+`_activar_ciudadano`) pasa por `registrar_ciudadano`, así que no hay riesgo de que un
+ciudadano recuperado se reclasifique como `REGISTRO_DIRECTO` por error.
+
+**Honestidad del dato, documentada como una carencia del acuerdo entre equipos, no
+propia** (docs/especificacion.md, nueva sección "Ausencia de un identificador del
+operador de origen", dentro de "Interoperabilidad entre operadores"): el formato de
+transferencia acordado no incluye ningún campo que identifique al operador remitente,
+así que `origen_operador_id`/`nombre` son siempre una deducción a partir del host de
+`confirmAPI`, nunca un dato recibido -- la misma clase de heurística que ya usa
+`_origen_coincide` para la confirmación de un envío propio (CLAUDE.md, trampa 6). La
+consola de administración refleja esa honestidad al mostrarlo: `app.admin.servicios
+._origen_mostrar` compone "Registro directo", "Transferido desde {nombre}" (cuando se
+resolvió contra el directorio), "Transferido desde {host} (sin resolver en el
+directorio)" (cuando no se pudo resolver, mostrando el host tal cual en vez de
+inventar un nombre) o "Desconocido" (ciudadano previo a la migración) -- nunca presenta
+una deducción como si fuera un dato certificado.
+
+Pantalla de Ciudadanos de la consola (`app/admin/templates/ciudadanos.html`) extendida
+con la columna "Origen" (el texto de arriba), un filtro por origen (`REGISTRO_DIRECTO`
+/ `TRANSFERENCIA` / `DESCONOCIDO`, este último `origen IS NULL`) y una columna
+"Operador destino" -- esta última **certera, no deducida**: para un ciudadano
+`TRASLADADO`, se resuelve contra `Transferencia.operador_destino_id` (el operador que
+ColCarpeta mismo eligió al enviarlo, `estado == CONFIRMADA`), nunca por heurística de
+host. Deliberadamente **no** se deriva ningún origen desde la bandeja de salida: esa es
+una cola de trabajo transitoria (las filas se purgan o quedan `FALLIDO`/`COMPLETADO`
+sin ninguna garantía de retención histórica), no un registro pensado para consultarse
+meses después -- exactamente lo que pedía esta tarea. El heurístico existente de
+`app.admin.servicios` (pantalla de Transferencias, para las filas `ENTRANTE` derivadas
+de `outbox`) sí se tocó, al día siguiente (ver "Unificación de los dos resolutores de
+operador" más abajo): en la primera versión de esta tarea se dejó como una copia
+independiente del nuevo `_resolver_operador_origen` de `outbox.py`, razonando que
+resolvían problemas distintos -- un error real, corregido tan pronto se señaló: las dos
+funciones respondían exactamente la misma pregunta ("qué operador está detrás de esta
+URL"), y dos implementaciones de la misma pregunta pueden divergir con el tiempo.
+
+Probado de punta a punta en Docker con el ciclo completo entre dos instancias
+(`postgres-a`/`postgres-b`/`mock-centralizador`/`app-a`/`app-b`, con
+`ADMIN_PASSWORD_HASH` agregado de forma temporal a ambas instancias y revertido antes
+de terminar -- `git diff --stat docker-compose.test.yml` quedó limpio):
+`scripts/probar_envio_transferencia.py` registró un ciudadano en `app-a` y lo trasladó
+a `app-b`; la consola de `app-a` mostró ese ciudadano con origen "Registro directo" y
+operador destino "Operador B (prueba)" (cierto, de la tabla `Transferencia`); la
+consola de `app-b` mostró al mismo ciudadano recibido con origen "Transferido desde
+Operador A (prueba)" (deducido, resuelto contra el directorio) y sin operador destino
+(sigue afiliado ahí). El filtro por origen se probó en las tres variantes
+(`TRANSFERENCIA` trae 1 en `app-b`, `REGISTRO_DIRECTO` trae 0 ahí, `DESCONOCIDO` trae 0
+en `app-a` con datos reales). Se sembró a mano un ciudadano sin `origen` (`NULL`,
+simulando uno anterior a la migración) directamente en `postgres-a` -- la consola lo
+mostró como "Desconocido" y el filtro `DESCONOCIDO` lo encontró; se limpió después de
+la prueba, en una base desechable. Regresión completa contra `app-a`, para confirmar
+que fijar `origen`/`origen_confirm_api`/`origen_operador_id`/`origen_operador_nombre`
+en las dos rutas de creación no rompió nada: `scripts/probar_carpeta_completa.py`,
+`scripts/probar_reconciliacion.py` (los cuatro escenarios), `scripts/probar_colision_email.py`,
+`scripts/probar_regreso_antes_de_purga.py` (ejercita el mismo paso 2 de
+`_recibir_transferencia` que ahora resuelve el origen) y `scripts/probar_firma_digital.py`
+-- las seis sin fallos.
+
+**Hallazgo aparte, no de este cambio:** `app/admin/templates/ciudadanos.html` apareció
+modificado en el disco durante esta tarea (fuera de esta sesión) con el botón "Limpiar"
+del filtro convertido de un `<a href="/admin/ciudadanos">` a un
+`<button type="button" onclick="window.location.href=...">`. Se dejó tal cual -- no era
+parte de lo pedido y el archivo ya venía así -- pero vale la pena señalarlo: el resto
+del proyecto evita a propósito depender de `onclick` para navegar (ver "Enlace o botón,
+auditado" más arriba, sobre el portal), precisamente porque un enlace corriente
+funciona sin JavaScript, se puede abrir en una pestaña nueva y se puede copiar, y un
+`onclick` no. Si se quiere, revertirlo a un `<a>` es una línea.
+
+**Unificación de los dos resolutores de operador, el 2026-09-24.** Señalado
+correctamente en revisión: `app.interoperabilidad.outbox._resolver_operador_origen`
+(nuevo el día anterior, para guardar `Ciudadano.origen_operador_id`/`nombre`) y
+`app.admin.servicios._resolver_operador_por_confirm_api` (ya existente, para la
+columna "Operador" de las filas `ENTRANTE` en la pantalla de Transferencias) hacían
+exactamente la misma pregunta -- "qué operador del directorio corresponde a esta URL de
+`confirmAPI`, por coincidencia de host" -- con dos copias del mismo bucle. La
+justificación original ("resuelven problemas distintos") no resistía el argumento
+correcto: la pregunta es una sola, y dos implementaciones de la misma pregunta pueden
+divergir con el tiempo -- la consola mostrando un operador y el dato guardado en
+`ciudadano` mostrando otro, para la misma transferencia.
+
+Unificadas en `app.interoperabilidad.transferencias.resolver_operador_por_host`
+(`operadores: list[OperadorCache], url: str | None) -> OperadorCache | None`), que vive
+junto a `_resolver_host`, ya existente en ese mismo módulo. Los dos consumidores ahora
+son capas delgadas sobre esa única función: `outbox._resolver_operador_origen` extrae
+`(id, nombre)` del `OperadorCache` que devuelve (o `(None, None)`);
+`admin.servicios._mostrar_operador_entrante` (renombrada, ya no pretende resolver nada
+por sí misma) solo le agrega el formato de texto que pide esa pantalla. La diferencia
+real que sí queda separada -- y que el código ahora dice explícitamente, en el
+docstring de `resolver_operador_por_host` -- es `_origen_coincide`, que verifica *quién
+llama* comparando IPs resueltas por DNS, no *qué URL quedó guardada*: una pregunta
+distinta, no una copia de esta.
+
+Sin migración ni cambio de comportamiento visible: mismo algoritmo exacto, ahora en un
+solo lugar. Probado en Docker con el mismo ciclo de `probar_envio_transferencia.py`
+(`app-a`/`app-b`/`mock-centralizador`, `ADMIN_PASSWORD_HASH` temporal revertido después):
+la consola de `app-b` siguió mostrando "Transferido desde Operador A (prueba)" para el
+ciudadano, y la pantalla de Transferencias de `app-b` siguió mostrando "Operador A
+(prueba)" para la fila `ENTRANTE` correspondiente -- ambas lecturas del mismo dato,
+ahora imposibles de hacer divergir porque comparten la función. Regresión:
+`scripts/probar_carpeta_completa.py` y `scripts/probar_reconciliacion.py` (los cuatro
+escenarios) sin fallos.
+
+**La plantilla `app/admin/templates/ciudadanos.html` se restauró una tercera vez el
+2026-09-24**, tras confirmarse (con `cat` directo al archivo y `git diff --no-index`
+contra vacío, antes de tocar nada) que había vuelto en disco a la versión sin la
+columna "Origen", el filtro por origen y la columna "Operador destino" -- la causa más
+probable, señalada por quien pidió el cambio: tener el archivo abierto en un editor
+cuyo guardado pisó el trabajo de la sesión. La lógica de fondo
+(`app.admin.servicios.listar_ciudadanos`, `FilaCiudadano.origen`/`operador_destino`)
+nunca se había perdido, solo la plantilla. Restaurada y confirmada esta vez con
+`git diff` real (el directorio `app/admin/` ya quedó indexado por git en algún punto
+entre una revisión y la siguiente, así que ahora sí muestra diffs por archivo en vez de
+aparecer como directorio nuevo completo) -- el diff mostró exactamente las tres piezas
+agregadas y nada más. Probado de nuevo en Docker con el mismo ciclo de
+`probar_envio_transferencia.py`: columna, filtro y operador destino visibles y
+correctos en `app-a` y `app-b`.
+
+**Backfill de `origen` para los cuatro ciudadanos previos a la migración de esquema,
+aplicado a la base real el 2026-09-24 (migración de datos `567f21d2ce7a`).** Antes de
+escribir nada se consultó la base real, de solo lectura: cuatro ciudadanos con
+`origen IS NULL` (`1122334455`, `1077700123`, `1032123123`, `1034556781`, todos
+creados antes de que `b1fb337fb116` agregara la columna), y **una sola** fila en
+`outbox` con `operacion = 'receiveTransferCitizen'` en toda la historia de la base
+(`outbox` no tiene purga automática, así que esa es la historia completa, no una
+muestra) -- lo que, por instrucción explícita, obligaba a parar antes de escribir
+cualquier cosa y reportarlo primero, en vez de asumir que "una sola fila" significaba
+"no hay nada que revisar". Esa fila (`id 42`, `FALLIDO`, cédula `1234567890`) se
+investigó a fondo antes de concluir nada: no corresponde a ningún ciudadano existente
+(esa cédula no está en la tabla), su `confirm_api` (`http://prueba-transferencia:9302/...`)
+es un nombre de host que solo existe dentro de la red aislada de Docker de
+`docker-compose.test.yml` -- imposible de haber originado fuera de esta máquina --, y
+el endpoint de transferencia de este operador nunca se publicó ante el MinTIC
+(CLAUDE.md, "Prohibido"), así que ningún operador real pudo haber sabido que
+ColCarpeta existía como destino. Confirmado como residuo de
+`scripts/probar_transferencia.py` corrido contra esta misma base durante "Probar en
+Linux" (2026-09-21/22), se fijó `origen = REGISTRO_DIRECTO` en los cuatro ciudadanos
+verificados -- por `id` explícito, nunca por un `WHERE origen IS NULL` genérico, para
+que la migración no toque ninguna fila que no haya sido comprobada una por una. El
+razonamiento completo, con cada consulta que lo respalda, queda escrito en el propio
+archivo de la migración (`alembic/versions/567f21d2ce7a_...py`) para que se pueda
+reconstruir sin esta conversación delante. Verificado tras aplicarla: los cuatro
+ciudadanos quedaron en `REGISTRO_DIRECTO`, cero siguen en `NULL`.
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio

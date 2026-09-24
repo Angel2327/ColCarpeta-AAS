@@ -252,6 +252,14 @@ Se agregan dos elementos que los operadores que no los reconozcan ignoran sin ro
 
 `citizenEmail` se adopta como `email_carpeta` del ciudadano tal como llega, sin importar el dominio y sin generar una dirección propia (AD-10). Si `contactEmail` no viene, `email_personal` queda vacío y se solicita al ciudadano en su primer inicio de sesión. Si `citizenEmail` llega vacío o con formato inválido —operador de origen que no respeta el acuerdo—, se genera una dirección propia con el patrón habitual y se deja constancia en la auditoría.
 
+### Ausencia de un identificador del operador de origen
+
+El formato de transferencia acordado entre los equipos del curso **no incluye ningún campo que identifique al operador que envía** una transferencia entrante (`POST /api/transferCitizen`). El cuerpo trae la cédula, los datos del ciudadano, sus documentos y `confirmAPI` -- una URL de vuelta para notificar el resultado --, pero nunca un `operatorId` ni un `operatorName` del remitente. Es una carencia del acuerdo entre equipos, no de esta implementación: no hay forma de pedirle ese dato al operador de origen porque el formato no reserva un lugar para él.
+
+Ante esa carencia, ColCarpeta **deduce** el operador de origen a partir del host de `confirmAPI`, comparándolo contra `operador_cache` (el directorio que expone `getOperators`) en el momento exacto de la recepción. La coincidencia de host en sí vive en una única función compartida (`app.interoperabilidad.transferencias.resolver_operador_por_host`), usada tanto por `app.interoperabilidad.outbox._resolver_operador_origen` (para guardar el origen del ciudadano al recibirlo) como por `app.admin.servicios` (para mostrar el operador de una transferencia entrante en la consola) -- así la misma pregunta nunca tiene dos respuestas posibles. Es una heurística de la misma familia que `_origen_coincide`, que verifica la confirmación de un envío propio comparando IPs en vez de hosts (CLAUDE.md, trampa 6: "la API del centralizador no tiene autenticación de ningún tipo") -- una coincidencia de host nunca es una identidad verificada, solo la mejor aproximación disponible con los datos que el acuerdo sí ofrece.
+
+Esa deducción, junto con el `confirmAPI` original y el momento en que se resolvió, se guarda en `Ciudadano.origen`/`origen_confirm_api`/`origen_operador_id`/`origen_operador_nombre` (ver "Modelo de datos" y AD-12) como una fotografía fijada al recibir al ciudadano -- nunca como una relación viva hacia `operador_cache`, cuyo nombre puede cambiar en un refresco posterior del directorio. La consola de administración (RF32-RF37, CU-22) refleja esta misma honestidad al mostrarlo: si el host se resolvió contra el directorio, muestra el nombre del operador; si no, muestra el host tal cual, marcado como sin resolver. Nunca presenta la deducción como si fuera un dato certificado.
+
 ### Colisión de `email_carpeta` entre dos ciudadanos distintos
 
 Puede llegar una transferencia cuyo `citizenEmail` ya es la `email_carpeta` de un ciudadano *distinto*, ya afiliado a ColCarpeta (mismo nombre y año de registro en dos operadores de origen distintos que generaron la misma dirección por el patrón habitual, por ejemplo). Es una colisión real, no un error de formato: AD-10 fija esa dirección como identificador permanente de cada ciudadano, así que no hay forma de inventarle una alterna a ninguno de los dos sin romper esa garantía.
@@ -288,7 +296,7 @@ Si transcurre `TRANSFER_CONFIRM_TIMEOUT` sin confirmación, se consulta `validat
 
 | Tabla | Campos principales |
 | --- | --- |
-| `ciudadano` | `id` (cédula, numérico, clave primaria), `nombre`, `direccion`, `email_carpeta`, `email_personal`, `telefono`, `password_hash`, `totp_secret`, `estado`, `identidad_verificada`, `creado_en` |
+| `ciudadano` | `id` (cédula, numérico, clave primaria), `nombre`, `direccion`, `email_carpeta`, `email_personal`, `telefono`, `password_hash`, `totp_secret`, `estado`, `identidad_verificada`, `origen`, `origen_confirm_api`, `origen_operador_id`, `origen_operador_nombre`, `creado_en` |
 | `documento` | `id`, `ciudadano_id`, `titulo`, `tipo`, `entidad_emisora`, `fecha_emision`, `s3_key`, `content_type`, `tamano_bytes`, `hash_sha256`, `certificado`, `estado_autenticacion`, `firma_valida`, `creado_en` |
 | `outbox` | `id`, `operacion`, `payload`, `estado`, `intentos`, `proximo_intento`, `ultimo_error`, `creado_en` |
 | `transferencia` | `id`, `ciudadano_id`, `operador_destino_id`, `confirm_api`, `estado`, `enviada_en`, `confirmada_en`, `purgar_despues_de` |

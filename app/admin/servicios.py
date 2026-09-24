@@ -23,13 +23,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_config
 from app.db import SessionLocal
 from app.identidad.seguridad import verificar_password
+from app.interoperabilidad.transferencias import resolver_operador_por_host
 from app.models import (
     Auditoria,
     Ciudadano,
     Documento,
     EstadoDocumento,
     EstadoOutbox,
+    EstadoTransferencia,
     OperadorCache,
+    OrigenCiudadano,
     Outbox,
     Transferencia,
 )
@@ -147,6 +150,34 @@ async def obtener_resumen() -> Resumen:
 
 # --- 2. ciudadanos ---------------------------------------------------------------
 
+# Valores aceptados por el filtro de origen (ver `listar_ciudadanos`). "DESCONOCIDO" no
+# es un valor de `OrigenCiudadano`: representa `origen IS NULL`, el ciudadano que ya
+# existia antes de que esta columna se agregara -- ver el comentario de ese campo en
+# app.models.Ciudadano.
+FILTRO_ORIGEN_DESCONOCIDO = "DESCONOCIDO"
+
+
+def _origen_mostrar(ciudadano: Ciudadano) -> str:
+    """Texto honesto sobre como llego el ciudadano (ver docs/especificacion.md,
+    "Interoperabilidad entre operadores"): el formato de transferencia acordado entre
+    operadores no incluye un identificador del operador de origen, asi que
+    `origen_operador_nombre` es una DEDUCCION, nunca un dato recibido. Si se pudo
+    resolver contra el directorio en el momento de la recepcion, se muestra ese nombre;
+    si no, se muestra el host de `origen_confirm_api` tal cual -- nunca se presenta una
+    deduccion como si fuera un dato certificado, y nunca se inventa un nombre para un
+    host que no se pudo resolver."""
+    if ciudadano.origen is None:
+        return "Desconocido"
+    if ciudadano.origen == OrigenCiudadano.REGISTRO_DIRECTO:
+        return "Registro directo"
+    # TRANSFERENCIA
+    if ciudadano.origen_operador_nombre:
+        return f"Transferido desde {ciudadano.origen_operador_nombre}"
+    host = urlparse(ciudadano.origen_confirm_api).hostname if ciudadano.origen_confirm_api else None
+    if host:
+        return f"Transferido desde {host} (sin resolver en el directorio)"
+    return "Transferido (origen sin identificar)"
+
 
 @dataclass(frozen=True)
 class FilaCiudadano:
@@ -156,15 +187,27 @@ class FilaCiudadano:
     creado_en: datetime
     documentos: int
     usado_bytes: int
+    origen: str
+    # Solo para quien ya se fue (estado TRASLADADO): el operador destino que NOSOTROS
+    # elegimos al enviarlo (Transferencia.operador_destino_id), nunca una deduccion --
+    # a diferencia de `origen`, este dato si es cierto. None si no se fue, o si por
+    # alguna razon no queda una Transferencia CONFIRMADA asociada.
+    operador_destino: str | None
 
 
-async def listar_ciudadanos(*, cedula: str | None, page: int) -> tuple[list[FilaCiudadano], int, int]:
+async def listar_ciudadanos(
+    *, cedula: str | None, origen: str | None, page: int
+) -> tuple[list[FilaCiudadano], int, int]:
     page = max(page, 1)
     condiciones = []
     if cedula:
         # BigInteger, no admite ILIKE directo: se compara como texto para permitir
         # busqueda por coincidencia parcial (como el resto de filtros del portal).
         condiciones.append(cast(Ciudadano.id, String).like(f"%{cedula}%"))
+    if origen == FILTRO_ORIGEN_DESCONOCIDO:
+        condiciones.append(Ciudadano.origen.is_(None))
+    elif origen in (OrigenCiudadano.REGISTRO_DIRECTO.value, OrigenCiudadano.TRANSFERENCIA.value):
+        condiciones.append(Ciudadano.origen == OrigenCiudadano(origen))
 
     async with SessionLocal() as session:
         total = (await session.execute(select(func.count()).select_from(Ciudadano).where(*condiciones))).scalar_one()
@@ -177,6 +220,7 @@ async def listar_ciudadanos(*, cedula: str | None, page: int) -> tuple[list[Fila
         )
         pagina_ciudadanos = list(resultado.scalars().all())
         ids = [c.id for c in pagina_ciudadanos]
+        ids_trasladados = [c.id for c in pagina_ciudadanos if c.estado.value == "TRASLADADO"]
 
         conteo_documentos: dict[int, int] = {}
         bytes_usados: dict[int, int] = {}
@@ -201,6 +245,23 @@ async def listar_ciudadanos(*, cedula: str | None, page: int) -> tuple[list[Fila
             )
             bytes_usados = dict(rb.all())
 
+        destinos: dict[int, str] = {}
+        if ids_trasladados:
+            # Certero, no deducido (a diferencia de `origen`): el operador destino de un
+            # traslado saliente lo elegimos nosotros mismos al enviarlo (CU-03). Toma la
+            # confirmacion mas reciente si por alguna razon hubiera mas de una fila.
+            rt = await session.execute(
+                select(Transferencia.ciudadano_id, OperadorCache.nombre)
+                .join(OperadorCache, OperadorCache.id == Transferencia.operador_destino_id)
+                .where(
+                    Transferencia.ciudadano_id.in_(ids_trasladados),
+                    Transferencia.estado == EstadoTransferencia.CONFIRMADA,
+                )
+                .order_by(Transferencia.confirmada_en.desc())
+            )
+            for ciudadano_id, nombre_operador in rt.all():
+                destinos.setdefault(ciudadano_id, nombre_operador)
+
     filas = [
         FilaCiudadano(
             id=c.id,
@@ -209,6 +270,8 @@ async def listar_ciudadanos(*, cedula: str | None, page: int) -> tuple[list[Fila
             creado_en=c.creado_en,
             documentos=conteo_documentos.get(c.id, 0),
             usado_bytes=bytes_usados.get(c.id, 0),
+            origen=_origen_mostrar(c),
+            operador_destino=destinos.get(c.id),
         )
         for c in pagina_ciudadanos
     ]
@@ -234,29 +297,22 @@ _ESTADO_ENTRANTE = {
 }
 
 
-def _resolver_operador_por_confirm_api(confirm_api: str | None, operadores: list[OperadorCache]) -> str:
+def _mostrar_operador_entrante(confirm_api: str | None, operadores: list[OperadorCache]) -> str:
     """CU-16 no persiste la identidad del operador de origen en ninguna tabla propia
     (solo queda en el `confirm_api` que trae la transferencia, dentro del payload de
-    `Outbox`): se resuelve aqui de forma heuristica, comparando el host de esa URL
-    contra el host de `transfer_api_url` de cada operador del directorio -- el mismo
-    tipo de coincidencia por host que ya usa `app.interoperabilidad.transferencias`
-    para verificar el origen de una confirmacion, pero reescrita aqui de forma
-    independiente: esta es una consulta de reporte, no querer acoplar un modulo de
-    solo lectura a un chequeo de seguridad que vive en otro lado por una razon
-    distinta. Nunca es una identidad confirmada -- el ecosistema no tiene
-    autenticacion real entre operadores (CLAUDE.md, "trampa 6")."""
-    if not confirm_api:
-        return "Desconocido"
-    host = urlparse(confirm_api).hostname
-    if not host:
-        return "Desconocido"
-    for operador in operadores:
-        if not operador.transfer_api_url:
-            continue
-        host_operador = urlparse(operador.transfer_api_url.strip()).hostname
-        if host_operador and host_operador == host:
-            return operador.nombre
-    return f"Desconocido ({host})"
+    `Outbox`): se resuelve por coincidencia de host contra el directorio con
+    `app.interoperabilidad.transferencias.resolver_operador_por_host` -- la misma
+    funcion que usa `app.interoperabilidad.outbox` para guardar el origen del
+    ciudadano al recibirlo (`Ciudadano.origen_operador_id`), para que las dos lecturas
+    del mismo dato nunca puedan divergir. Esta funcion solo le agrega el formato de
+    texto que necesita esta pantalla: nunca presenta la deduccion como una identidad
+    confirmada -- el ecosistema no tiene autenticacion real entre operadores
+    (CLAUDE.md, "trampa 6")."""
+    operador = resolver_operador_por_host(operadores, confirm_api)
+    if operador is not None:
+        return operador.nombre
+    host = urlparse(confirm_api).hostname if confirm_api else None
+    return f"Desconocido ({host})" if host else "Desconocido"
 
 
 async def listar_transferencias(*, page: int) -> tuple[list[FilaTransferencia], int]:
@@ -304,7 +360,7 @@ async def listar_transferencias(*, page: int) -> tuple[list[FilaTransferencia], 
         filas.append(
             FilaTransferencia(
                 direccion="ENTRANTE",
-                operador=_resolver_operador_por_confirm_api(confirm_api, operadores),
+                operador=_mostrar_operador_entrante(confirm_api, operadores),
                 estado=_ESTADO_ENTRANTE.get(o.estado, "EN_PROCESO"),
                 fecha_envio=o.creado_en,
                 fecha_confirmacion=None,

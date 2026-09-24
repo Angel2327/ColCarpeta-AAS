@@ -265,6 +265,35 @@ def _resolver_host(url: str) -> str | None:
         return None
 
 
+def resolver_operador_por_host(operadores: list[OperadorCache], url: str | None) -> OperadorCache | None:
+    """Responde una sola pregunta -- que operador del directorio (`operador_cache`)
+    corresponde a una URL como `confirmAPI`, por coincidencia de host -- para los dos
+    lugares que la necesitan: `app.interoperabilidad.outbox._recibir_transferencia`
+    (para guardar `Ciudadano.origen_operador_id`/`origen_operador_nombre` al recibir a
+    un ciudadano) y `app.admin.servicios` (para mostrar el operador de una transferencia
+    entrante en la pantalla de Transferencias). Antes cada uno tenia su propia copia de
+    este mismo bucle -- dos implementaciones de la misma pregunta que podian divergir
+    con el tiempo y mostrar operadores distintos para el mismo dato -- unificadas aqui
+    para que eso sea imposible.
+
+    Nunca es una identidad confirmada (CLAUDE.md, trampa 6: el ecosistema no tiene
+    autenticacion): es la misma clase de heuristica por host que ya usa
+    `_origen_coincide` mas abajo, solo que esa otra ademas resuelve DNS para comparar
+    IPs (verifica quien llama, no quien esta detras de un dato ya guardado) -- una
+    diferencia real que las mantiene separadas. Esta funcion nunca inventa un operador:
+    `None` si el host no coincide con ninguno en `operadores`.
+    """
+    host = _resolver_host(url) if url else None
+    if not host:
+        return None
+    for operador in operadores:
+        if not operador.transfer_api_url:
+            continue
+        if _resolver_host(operador.transfer_api_url.strip()) == host:
+            return operador
+    return None
+
+
 def _origen_coincide(request: Request, operador: OperadorCache) -> bool:
     """Verificacion heuristica de "controles propios" (CLAUDE.md, trampa 6: el
     ecosistema no tiene autenticacion). Compara la IP que llama contra la IP resuelta
