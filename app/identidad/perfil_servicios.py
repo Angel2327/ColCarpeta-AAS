@@ -20,7 +20,7 @@ from app.db import SessionLocal
 from app.errors import ErrorDeNegocio
 from app.identidad.seguridad import verificar_password
 from app.identidad.totp import generar_secreto, uri_otpauth, verificar_codigo
-from app.models import Auditoria, Ciudadano, Documento, EstadoDocumento, EstadoTotp
+from app.models import Auditoria, Ciudadano, Documento, EstadoCiudadano, EstadoDocumento, EstadoOutbox, EstadoTotp, Outbox
 
 
 async def _usado_bytes(session: AsyncSession, ciudadano_id: int) -> int:
@@ -47,6 +47,38 @@ async def obtener_perfil(*, ciudadano_id: int) -> tuple[Ciudadano, int, int]:
         assert ciudadano is not None
         usado = await _usado_bytes(session, ciudadano.id)
     return ciudadano, cfg.cuota_ciudadano_bytes, usado
+
+
+async def estado_afiliacion(*, ciudadano_id: int) -> str | None:
+    """Para el perfil (portal): en qué va la afiliación del ciudadano ante el MinTIC,
+    mientras el registro no la registra en ningún lado visible. El registro deja al
+    ciudadano en `PENDIENTE_CENTRALIZADOR` y encola `registerCitizen`; la bandeja de
+    salida lo pasa a `ACTIVO` en cuanto el centralizador confirma (CU-01, paso 7).
+
+    Devuelve `"pendiente"` mientras la fila más reciente de `registerCitizen` para
+    esta cédula sigue `PENDIENTE`/`EN_PROCESO` (o directamente no existe todavía, el
+    instante entre crear al ciudadano y que la bandeja de salida la reclame),
+    `"fallido"` si esa fila ya agotó sus reintentos (`FALLIDO`) -- CU-01 dice
+    explícitamente que el ciudadano se queda en `PENDIENTE_CENTRALIZADOR` para
+    siempre en ese caso, así que sin esto el portal lo dejaría pareciendo "pendiente"
+    indefinidamente sin decir qué pasó -- o `None` si el ciudadano ya no está en
+    `PENDIENTE_CENTRALIZADOR` (nada que mostrar: ya se resolvió, o todavía ni llega a
+    esa etapa -- `PENDIENTE_VERIFICACION`, antes incluso de la Registraduría, no es
+    esto)."""
+    async with SessionLocal() as session:
+        ciudadano = await session.get(Ciudadano, ciudadano_id)
+        assert ciudadano is not None
+        if ciudadano.estado != EstadoCiudadano.PENDIENTE_CENTRALIZADOR:
+            return None
+
+        resultado = await session.execute(
+            select(Outbox.estado)
+            .where(Outbox.operacion == "registerCitizen", Outbox.payload["cedula"].astext == str(ciudadano_id))
+            .order_by(Outbox.creado_en.desc())
+            .limit(1)
+        )
+        estado_outbox = resultado.scalar_one_or_none()
+        return "fallido" if estado_outbox == EstadoOutbox.FALLIDO else "pendiente"
 
 
 async def actualizar_perfil(

@@ -1,0 +1,9 @@
+<div id="perfil-afiliacion"{% if afiliacion == "pendiente" %} hx-get="/perfil/afiliacion" hx-trigger="load delay:5s" hx-swap="outerHTML"{% endif %}>
+  {% if afiliacion == "pendiente" %}
+  <p class="aviso aviso--atencion" role="status">Tu registro se está confirmando ante el sistema nacional de Carpeta Ciudadana. Esta sección se actualiza sola, sin que tengas que recargar la página.</p>
+  {% elif afiliacion == "fallido" %}
+  <p class="aviso aviso--error" role="status">No fue posible confirmar tu registro ante el sistema nacional después de varios intentos. Tu carpeta sigue sin activarse; escríbenos si esto no cambia.</p>
+  {% else %}
+  <p class="aviso aviso--exito" role="status">Tu carpeta está registrada ante el sistema nacional de Carpeta Ciudadana.</p>
+  {% endif %}
+</div>

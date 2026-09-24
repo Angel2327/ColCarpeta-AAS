@@ -13,8 +13,8 @@
   --color-primario-oscuro: #0E2E40;
   --color-primario-fondo: #E5EDF1;  /* azul muy suave: hover discreto de descargar/sustituir */
 
-  --color-certificado-fondo: #F4E9D6;  /* ocre: documento certificado */
-  --color-certificado-texto: #7A4E12;
+  --color-certificado-fondo: #d8ebdd;
+  --color-certificado-texto: #469c67;
 
   --color-exito-fondo: #E2EFE4;    /* verde: solo firma verificada y confirmaciones */
   --color-exito-texto: #1F5132;
@@ -22,6 +22,7 @@
   --color-error-texto: #8A2020;
   --color-atencion-fondo: #FDF6E9;
   --color-atencion-texto: #6B4310;
+  --color-atencion-notificaciones: #19405e;
 
   --radio: 10px;
   --radio-grande: 24px;
@@ -361,7 +362,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   white-space: nowrap;
 }
 .etiqueta--certificado { background: var(--color-certificado-fondo); color: var(--color-certificado-texto); }
-.etiqueta--temporal { background: var(--color-suave); color: #4A4C45; border: none; }
+.etiqueta--temporal { background: var(--color-suave); color: #634b44; border: none; }
 .etiqueta--firma-valida { background: var(--color-exito-fondo); color: var(--color-exito-texto); }
 .etiqueta--firma-invalida { background: var(--color-error-fondo); color: var(--color-error-texto); }
 .etiqueta--firma-ausente { background: var(--color-suave); color: var(--color-texto-tenue); border: none; }
@@ -495,7 +496,7 @@ dl.detalle dd { margin: 0; }
 
 .encabezado__nav a#notificaciones-contador.encabezado__nav-item--con-novedades {
   font-weight: 700;
-  color: var(--color-atencion-texto);
+  color: var(--color-atencion-notificaciones);
 }
 
 /* --- cuota ------------------------------------------------------------------ */

@@ -1230,6 +1230,42 @@ redirección legada, que sigue devolviendo la URL sin versión tal cual se esper
 `prueba-portal-segunda-pasada`, `prueba-portal-primer-acceso` y
 `prueba-carpeta-completa` -- las cuatro sin fallos.
 
+**Estado de afiliación ante el MinTIC, visible en `/perfil`, agregado el 2026-09-24**
+(hasta ahora el registro dejaba al ciudadano en `PENDIENTE_CENTRALIZADOR` sin que el
+portal lo dijera en ningún lado). Nueva sección "Registro ante el MinTIC", ubicada
+entre "Mis datos" y "Espacio usado", con el mismo patrón de sondeo HTMX que ya tenía
+el estado de un documento (`_documento_estado.html`): `_perfil_afiliacion.html`
+(nuevo fragmento) trae `hx-get="/perfil/afiliacion"`/`hx-trigger="load delay:5s"`
+solo mientras hay algo que pueda cambiar solo, y deja de traerlo en cuanto se
+resuelve. `app.identidad.perfil_servicios.estado_afiliacion` distingue tres casos --
+`None` (ya `ACTIVO` o más allá: la sección muestra la confirmación y no vuelve a
+sondear), `"pendiente"` (aviso en lenguaje llano de que se está confirmando el
+registro, sigue sondeando) y `"fallido"` (la bandeja de salida agotó sus reintentos
+con el `registerCitizen` de este ciudadano -- CU-01 dice que se queda en
+`PENDIENTE_CENTRALIZADOR` para siempre en ese caso, así que sin esto el portal lo
+dejaría pareciendo "pendiente" indefinidamente; se muestra y deja de sondear, igual
+que un documento `RECHAZADO` por GovCarpeta) -- consultando la fila `registerCitizen`
+más reciente para la cédula en `outbox` (mismo patrón exacto que
+`app.documentos.servicios.firma_en_validacion`, con `Outbox.payload["cedula"].astext`
+en vez de `documento_id`). `PENDIENTE_VERIFICACION` (antes incluso de la
+Registraduría, ni siquiera llegó a encolar `registerCitizen`) no muestra nada en esta
+sección -- deliberado: es una etapa distinta, no la que pidió esta tarea.
+
+Probado de punta a punta en Docker: registré un ciudadano contra `app-a` y confirmé
+que `/perfil` muestra el aviso "pendiente" con el `hx-get` presente antes de que la
+bandeja de salida (`OUTBOX_INTERVALO_SEGUNDOS=3` en este entorno) alcance a
+procesarlo, y que segundos después (sin recargar manualmente, pidiendo `/perfil` de
+nuevo como lo haría el sondeo real) el mismo bloque ya muestra la confirmación sin el
+atributo de sondeo. El caso `"fallido"` no ocurre solo contra `mock-centralizador`
+(que siempre responde éxito), así que lo sembré directamente en la base desechable de
+`app-a` (mismo patrón que `scripts/probar_reconciliacion.py`): retrocedí un ciudadano
+ya `ACTIVO` a `PENDIENTE_CENTRALIZADOR` e inserté a mano una fila `registerCitizen`
+`FALLIDO` para su cédula -- `/perfil` mostró el aviso de reintentos agotados
+correctamente. Regresión: `prueba-portal` y `prueba-portal-segunda-pasada` (esta
+última ejercita `GET`/`POST /perfil` de lleno, con la sección nueva en el camino) sin
+fallos, más `prueba-carpeta-completa` confirmando que `GET`/`PATCH /api/v1/perfil` (la
+ruta JSON, que no toca esta pantalla) sigue sin cambios.
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio

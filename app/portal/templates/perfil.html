@@ -37,6 +37,11 @@
   </form>
 </section>
 
+<section class="tarjeta" aria-labelledby="titulo-afiliacion">
+  <h2 id="titulo-afiliacion">Registro ante el MinTIC</h2>
+  {% include "_perfil_afiliacion.html" %}
+</section>
+
 <section class="tarjeta" aria-labelledby="titulo-cuota">
   <h2 id="titulo-cuota">Espacio usado</h2>
   {% set porcentaje = (100 * usado_bytes / cuota_bytes) if cuota_bytes else 0 %}

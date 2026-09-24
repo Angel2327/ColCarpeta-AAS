@@ -27,10 +27,25 @@ async def perfil(request: Request) -> HTMLResponse:
         return RedirectResponse("/sesion", status_code=303)
 
     ciudadano, cuota_bytes, usado_bytes = await perfil_servicios.obtener_perfil(ciudadano_id=ciudadano.id)
-    contexto = {"ciudadano": ciudadano, "cuota_bytes": cuota_bytes, "usado_bytes": usado_bytes}
+    afiliacion = await perfil_servicios.estado_afiliacion(ciudadano_id=ciudadano.id)
+    contexto = {"ciudadano": ciudadano, "cuota_bytes": cuota_bytes, "usado_bytes": usado_bytes, "afiliacion": afiliacion}
     if request.query_params.get("actualizado"):
         contexto["mensaje_exito"] = "Tus datos se actualizaron correctamente."
     return templates.TemplateResponse(request, "perfil.html", contexto)
+
+
+@router.get("/perfil/afiliacion", response_class=HTMLResponse)
+async def afiliacion_estado(request: Request) -> HTMLResponse:
+    """Fragmento sondeado por HTMX desde `/perfil` mientras el ciudadano sigue
+    `PENDIENTE_CENTRALIZADOR` -- mismo patrón que `_documento_estado.html`: deja de
+    traer `hx-trigger` en cuanto `perfil_servicios.estado_afiliacion` devuelve `None`
+    (ya `ACTIVO`) o `"fallido"` (reintentos agotados, ya no se va a resolver solo)."""
+    ciudadano = await ciudadano_actual_portal(request)
+    if ciudadano is None:
+        return HTMLResponse('<div id="perfil-afiliacion"></div>')
+
+    afiliacion = await perfil_servicios.estado_afiliacion(ciudadano_id=ciudadano.id)
+    return templates.TemplateResponse(request, "_perfil_afiliacion.html", {"afiliacion": afiliacion})
 
 
 @router.post("/perfil", response_class=HTMLResponse)
@@ -54,10 +69,17 @@ async def actualizar_perfil(
         )
     except ErrorDeNegocio as exc:
         ciudadano_recargado, cuota_bytes, usado_bytes = await perfil_servicios.obtener_perfil(ciudadano_id=ciudadano.id)
+        afiliacion = await perfil_servicios.estado_afiliacion(ciudadano_id=ciudadano.id)
         return templates.TemplateResponse(
             request,
             "perfil.html",
-            {"ciudadano": ciudadano_recargado, "cuota_bytes": cuota_bytes, "usado_bytes": usado_bytes, "error": exc.mensaje},
+            {
+                "ciudadano": ciudadano_recargado,
+                "cuota_bytes": cuota_bytes,
+                "usado_bytes": usado_bytes,
+                "afiliacion": afiliacion,
+                "error": exc.mensaje,
+            },
             status_code=200,
         )
 
