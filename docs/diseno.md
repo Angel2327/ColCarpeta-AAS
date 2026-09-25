@@ -23,6 +23,10 @@ contra las clases que ya existen en `app/portal/templates/` y en
   información. El dato crudo se conserva -- alguien puede necesitar comprobarlo --
   pero no es lo que se enseña primero: va accesible, nunca destacado (ver "Datos que
   vienen de un sistema externo", sección 5).
+- **Una etiqueta de estado no puede ser una palabra que la persona también pueda
+  escribir como dato.** Si puede, se nombra la acción o el actor detrás del estado, no
+  la cualidad -- ver "Etiquetas de estado", sección 4, con el caso real que motivó
+  esta regla.
 
 ## 2. Variables
 
@@ -126,9 +130,23 @@ el certificado pasa al ocre para que deje de confundirse con la firma verificada
 .etiqueta--firma-ausente  { background: var(--color-suave); color: var(--color-texto-tenue); border: none; }
 ```
 
-Debajo de un documento temporal va una línea en `nota-pequena` que diga
-**"Información proporcionada por ti"**. Sin alarmas: el ciudadano no está haciendo
-nada malo al subir su recibo escaneado.
+**El texto de la etiqueta nombra el origen, no una cualidad -- "Certificado" y
+"Temporal" quedaron descartados.** El tipo de documento lo escribe a mano el propio
+ciudadano ("certificado laboral", "certificado de estudios"), así que un mismo
+documento podía leerse "Certificado" en el tipo y "TEMPORAL" en la etiqueta unas
+líneas más abajo, o "CERTIFICADO" dos veces con dos significados distintos -- el
+adjetivo también es un sustantivo común que la persona ya estaba usando para otra
+cosa. Las etiquetas pasan a nombrar quién puso el documento ahí:
+
+```
+De una entidad     (antes "Certificado")
+Subido por ti       (antes "Temporal")
+```
+
+Ninguna de las dos coincide con un tipo que alguien pueda escribir a mano, así que ya
+no hace falta la línea aparte en `nota-pequena` ("Información proporcionada por ti")
+debajo de un documento temporal: la etiqueta nueva dice lo mismo ella sola, sin
+alarmas -- el ciudadano no está haciendo nada malo al subir su recibo escaneado.
 
 ## 5. Botones, tarjetas y campos
 
@@ -394,14 +412,25 @@ lado con lo que tenga que emparejarse. La diferencia de peso entre un grupo y un
 acción sola sigue siendo válida; lo que no vale es mezclar pesos *dentro* del mismo
 grupo.
 
-En bloques más compactos (la fila de un documento en la lista de la carpeta), las tres
-acciones pueden compartir una geometría más chica en vez de la de `.boton` completo --
-`boton-enlace` cumple ahí el mismo papel, siempre que las tres usen la misma variante
-base. Todo lo que usa `boton-enlace` tiene que avisar de que es pulsable al pasar el
-cursor, no solo llevar subrayado: `boton-enlace--peligro` (Eliminar) ya tiene su
-propio hover en rojo; el resto (Descargar, Sustituir) recibe el mismo tratamiento pero
-en azul -- fondo muy suave y borde del color primario, también en `:focus-visible`,
-para que quien navega con teclado vea la misma señal que quien usa el ratón:
+En bloques más compactos (la fila de un documento en la lista de la carpeta) se probó
+`boton-enlace` para una geometría más chica que la de `.boton` completo -- y no
+funcionó: `boton-enlace` no fija su propio `min-height`, así que un `<a
+class="boton-enlace">` (Descargar, Sustituir) queda con la altura que le den su
+padding y su texto, mientras que un `<button class="boton-enlace ...">` (Eliminar,
+que tiene que ser un botón porque hace POST) sigue emparejando con el selector
+genérico `button, .boton { min-height: 44px; ... }` de arriba -- la regla de la etiqueta
+(clase) no pisa esa altura mínima, solo el resto de las propiedades. El resultado: las
+tres acciones de la misma fila con alturas distintas, exactamente el problema que esta
+regla existe para evitar. La fila de la carpeta usa hoy la misma solución que el
+detalle de un documento: `.boton` completo con las mismas tres variantes de color
+(`boton--secundario`, `boton--neutro`, `boton--peligro-discreto`) -- `boton-enlace`
+sigue existiendo para otros usos (el enlace "Más filtros", por ejemplo, no es un grupo
+de acciones), pero dejó de recomendarse para agrupar acciones de distinto tipo de
+elemento (`<a>` y `<button>` mezclados). Todo lo que sí siga usando `boton-enlace`
+tiene que avisar de que es pulsable al pasar el cursor, no solo llevar subrayado --
+`boton-enlace--peligro` ya tiene su propio hover en rojo; el resto recibe el mismo
+tratamiento pero en azul, también en `:focus-visible`, para que quien navega con
+teclado vea la misma señal que quien usa el ratón:
 
 ```css
 .boton-enlace {

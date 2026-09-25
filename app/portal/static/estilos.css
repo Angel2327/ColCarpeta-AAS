@@ -387,6 +387,19 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 }
 .carpeta-cabecera h1 { margin: 0; }
 
+/* Titulo del detalle de un documento junto a su etiqueta de procedencia, en la misma
+   linea -- no .carpeta-cabecera (esa usa space-between, que aqui alejaria la etiqueta
+   del titulo en vez de pegarla). Reutiliza el mismo 0.75rem que ya trae h1 como
+   margen inferior propio, para no inventar un espacio distinto. */
+.documento-encabezado {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+.documento-encabezado h1 { margin: 0; }
+
 /* Columna derecha para la cuota: solo cabe a partir de 1000px (contenedor de
    1080px menos el ancho de la tarjeta lateral y su espacio). Por debajo de eso, un
    solo renglon: la tarjeta de cuota queda debajo de la lista, en el orden en que

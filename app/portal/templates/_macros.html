@@ -1,19 +1,22 @@
 {# Como se muestra un documento: en lenguaje de persona, nunca de sistema (ver el
    propio pedido de la tarea). "certificado" y "firma_valida" son dos senales
-   independientes del backend -- estas dos macros son la unica decision de presentacion
-   sobre como combinarlas, y viven aqui para no repetirla entre la lista y el detalle. #}
+   independientes del backend -- esta y las otras macros son la unica decision de
+   presentacion sobre como combinarlas, y viven aqui para no repetirla entre la lista
+   y el detalle.
+
+   La etiqueta nombra el ORIGEN, no una cualidad: "Certificado"/"Temporal" chocaban con
+   el tipo de documento, que el propio ciudadano escribe a mano ("certificado laboral",
+   "certificado de estudios") -- un mismo documento podia leerse "Certificado" en el
+   tipo y "TEMPORAL" en la etiqueta, o "CERTIFICADO" dos veces con dos significados
+   distintos. "De una entidad"/"Subido por ti" no coinciden con ningun tipo que alguien
+   pueda escribir, asi que ya no hace falta la nota aparte de procedencia debajo del
+   documento (decia lo mismo que la etiqueta nueva dice sola). #}
 
 {% macro etiqueta_procedencia(doc) %}
   {% if doc.certificado %}
-  <span class="etiqueta etiqueta--certificado">Certificado</span>
+  <span class="etiqueta etiqueta--certificado">De una entidad</span>
   {% else %}
-  <span class="etiqueta etiqueta--temporal">Temporal</span>
-  {% endif %}
-{% endmacro %}
-
-{% macro nota_procedencia(doc) %}
-  {% if not doc.certificado %}
-  <span class="nota-pequena">Información proporcionada por ti.</span>
+  <span class="etiqueta etiqueta--temporal">Subido por ti</span>
   {% endif %}
 {% endmacro %}
 

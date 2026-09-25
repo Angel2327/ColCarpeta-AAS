@@ -36,8 +36,8 @@
               <label for="certificado_f">Procedencia</label>
               <select id="certificado_f" name="certificado">
                 <option value="" {{ "selected" if filtros.certificado is none else "" }}>Cualquiera</option>
-                <option value="true" {{ "selected" if filtros.certificado == True else "" }}>Certificado</option>
-                <option value="false" {{ "selected" if filtros.certificado == False else "" }}>Temporal</option>
+                <option value="true" {{ "selected" if filtros.certificado == True else "" }}>De una entidad</option>
+                <option value="false" {{ "selected" if filtros.certificado == False else "" }}>Subido por ti</option>
               </select>
             </div>
             <div class="campo">

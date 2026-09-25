@@ -7,21 +7,20 @@
       {{ m.etiqueta_firma(doc) }}
     </div>
   </div>
-  {{ m.nota_procedencia(doc) }}
   <div class="documento-fila__meta">
     {{ doc.tipo }}{% if doc.entidad_emisora %} · {{ doc.entidad_emisora }}{% endif %}
     {% if doc.fecha_emision %} · emitido el {{ doc.fecha_emision.strftime("%d/%m/%Y") }}{% endif %}
   </div>
   <div class="documento-fila__acciones">
-    <a class="boton-enlace" href="/documentos/{{ doc.id }}/descarga">Descargar</a>
+    <a class="boton boton--secundario" href="/documentos/{{ doc.id }}/descarga">Descargar</a>
     {% if not doc.certificado %}
-    <a class="boton-enlace" href="/documentos/{{ doc.id }}/sustituir">Sustituir</a>
+    <a class="boton boton--neutro" href="/documentos/{{ doc.id }}/sustituir">Sustituir</a>
     <form method="post" action="/documentos/{{ doc.id }}/eliminar"
           hx-post="/documentos/{{ doc.id }}/eliminar"
           hx-target="#documento-{{ doc.id }}"
           hx-swap="outerHTML"
           hx-confirm="¿Eliminar «{{ doc.titulo }}» de tu carpeta?">
-      <button type="submit" class="boton-enlace boton-enlace--peligro">Eliminar</button>
+      <button type="submit" class="boton boton--peligro-discreto">Eliminar</button>
     </form>
     {% endif %}
   </div>

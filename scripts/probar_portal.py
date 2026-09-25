@@ -131,10 +131,8 @@ async def main() -> None:
             print(r.text[:3000])
         if "El documento se subió correctamente" not in r.text:
             fallos.append("subir documento: no se muestra el mensaje de exito")
-        if "Temporal" not in r.text:
-            fallos.append("subir documento: se esperaba la etiqueta 'Temporal' (lo subio el ciudadano)")
-        if "Información proporcionada por ti" not in r.text:
-            fallos.append("subir documento: se esperaba la nota en letra pequena de procedencia")
+        if "Subido por ti" not in r.text:
+            fallos.append("subir documento: se esperaba la etiqueta 'Subido por ti' (lo subio el ciudadano)")
 
         coincidencia = re.search(r"/documentos/([0-9a-fA-F-]{36})", r.text)
         if not coincidencia:

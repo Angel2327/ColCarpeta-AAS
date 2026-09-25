@@ -4,7 +4,10 @@
 {% block main_extra_class %}contenedor--estrecho{% endblock %}
 {% block contenido %}
 <p><a href="/carpeta">« Volver a mi carpeta</a></p>
-<h1>{{ doc.titulo }}</h1>
+<div class="documento-encabezado">
+  <h1>{{ doc.titulo }}</h1>
+  {{ m.etiqueta_procedencia(doc) }}
+</div>
 
 {% if error %}
 <p class="aviso aviso--error" role="alert">{{ error }}</p>
@@ -15,11 +18,6 @@
 {% endif %}
 
 <div class="tarjeta">
-  <div>
-    {{ m.etiqueta_procedencia(doc) }}
-  </div>
-  {{ m.nota_procedencia(doc) }}
-
   <dl class="detalle">
     <dt>Tipo</dt>
     <dd>{{ doc.tipo }}</dd>

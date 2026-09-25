@@ -1624,6 +1624,74 @@ sigue sin fallos (ejercita el detalle de un documento, que usa esta misma rejill
 se verificó con un navegador real a 390px ni a un ancho justo por encima de 800px --
 misma limitación de herramientas que el resto de esta sesión.
 
+**Colisión entre la etiqueta "Certificado"/"Temporal" y el tipo de documento,
+corregida el 2026-09-24 (rehecha ese mismo día: el primer intento se perdió del
+disco antes de llegar a `git commit` -- ver la nota al final de este punto).** El
+adjetivo también es un sustantivo común que el ciudadano ya usaba para otra cosa: el
+tipo de documento lo escribe él mismo a mano ("certificado laboral", "certificado de
+estudios"), así que un mismo documento podía leerse "Certificado" en el tipo y
+"TEMPORAL" en la etiqueta unas líneas más abajo, o "CERTIFICADO" dos veces con
+significados distintos. Las etiquetas de `app.portal.templates._macros.etiqueta_procedencia`
+pasan a nombrar el origen en vez de una cualidad: "De una entidad" (antes
+"Certificado") y "Subido por ti" (antes "Temporal") -- ninguna de las dos coincide con
+un tipo que alguien pueda escribir a mano. Deliberadamente **sin tocar** el campo
+`documento.certificado` del modelo, la API, ni el vocabulario de
+`docs/especificacion.md`: ahí "certificado" es el contrato y el lenguaje del caso de
+estudio, sin ambigüedad porque no convive con un tipo escrito por el ciudadano. El
+filtro de procedencia en `/carpeta` usa las mismas dos palabras. La macro
+`nota_procedencia` ("Información proporcionada por ti", debajo de un documento
+temporal) se eliminó por completo, junto con sus dos llamados
+(`documento.html`, `_documento_fila.html`): con la etiqueta nueva decía lo mismo dos
+veces.
+
+Aprovechando que se estaba tocando `_documento_fila.html`, se corrigió también que
+Descargar/Sustituir/Eliminar en la lista de la carpeta seguían siendo texto subrayado
+de distinto color y tamaño -- el arreglo de "las acciones de un grupo comparten
+geometría" (aplicado antes solo al detalle de `/documentos/{id}`) llega ahora también
+aquí: las tres pasan de `.boton-enlace`/`.boton-enlace--peligro` a `.boton`
+completo con sus variantes de color ya existentes (`boton--secundario`,
+`boton--neutro`, `boton--peligro-discreto`), sin agregar ninguna clase CSS nueva --
+ya existían, solo no se usaban ahí. Causa raíz de por qué `boton-enlace` nunca
+funcionó para esto, documentada en `docs/diseno.md`: no fija su propio `min-height`,
+así que un `<a class="boton-enlace">` (Descargar, Sustituir) queda con la altura de su
+padding y su texto, mientras que el `<button class="boton-enlace ...">` de Eliminar
+(tiene que ser un botón porque hace POST) sigue emparejando con el selector genérico
+`button, .boton { min-height: 44px; ... }` -- las tres acciones de la misma fila
+terminaban con alturas distintas.
+
+Nueva regla en `docs/diseno.md` (sección 1 "Principios" y sección 4 "Etiquetas de
+estado"): una etiqueta de estado no puede ser una palabra que la persona también
+pueda escribir como dato; si puede, se nombra la acción o el actor detrás del estado,
+no la cualidad. `scripts/probar_portal.py` actualizado: las dos aserciones viejas
+("Temporal" y "Información proporcionada por ti") se reemplazan por una sola
+("Subido por ti").
+
+**Nota sobre por qué esto se rehizo dos veces.** La primera versión de este mismo
+cambio (incluida una corrección aparte, el bloque `.documento-encabezado` que empareja
+el título de un documento con su etiqueta en la misma línea en vez de una encima de la
+otra) se implementó y se probó de punta a punta en una sesión anterior, pero nunca
+llegó a un `git commit` -- y para cuando se pidió rehacerla, ya no estaba ni en el
+disco ni en el historial de git (`git status`/`git log` limpios, sin rastro). La causa
+más probable, ya vista antes con `app/admin/templates/ciudadanos.html`: un editor con
+una pestaña vieja de estos mismos archivos abierta, que sobrescribió el trabajo al
+guardar. Al detectarlo, se restauraron **ambos** cambios juntos -- el de la etiqueta
+(pedido explícitamente esta vez) y el de `.documento-encabezado` (no pedido esta vez,
+pero indispensable: rehacer uno sin el otro habría reintroducido en el mismo archivo
+un bug de layout ya diagnosticado y corregido antes).
+
+Probado de punta a punta en Docker: `scripts/probar_portal.py` sin fallos; un script
+ad-hoc (no incorporado a la suite, borrado al terminar) subió un documento con
+`tipo="Certificado laboral"` literal y confirmó la etiqueta nueva sin colisión visible,
+las tres acciones de la fila compartiendo clase `.boton`, el filtro con las opciones
+nuevas, la nota redundante ausente, y el `<h1>` + la etiqueta en el mismo bloque
+`.documento-encabezado` en el detalle. Regresión: `scripts/probar_portal_segunda_pasada.py`
+(traslado completo hasta `CONFIRMADA` incluido) y `scripts/probar_carpeta_completa.py`
+-- ambas sin fallos. No se verificó a 390 px con un navegador real ni una captura de
+pantalla -- misma limitación de herramientas que el resto de esta sesión; se revisó por
+código que `.documento-fila__acciones`, `.acciones` y `.documento-encabezado` tienen
+`flex-wrap: wrap`, así que las acciones y la pareja título/etiqueta se apilan en vez de
+desbordar en un ancho angosto.
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio
