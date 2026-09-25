@@ -3,6 +3,16 @@ documentos" > Almacenamiento). Unico modulo que habla con el almacenamiento.
 
 El bucket es privado y las claves de objeto se generan como identificadores aleatorios,
 sin cedula ni nombre del ciudadano.
+
+Supabase Storage es S3-compatible, no es S3: implementa bien las operaciones sobre UN
+objeto (`put_object`, `delete_object`, `get_object`, `generate_presigned_url`, las
+cuatro que usa este modulo), pero `delete_objects` (borrado por lotes, varias claves en
+una sola llamada) le devuelve a boto3 un `ClientError` sin codigo ni mensaje --
+confirmado el 2026-09-25 al escribir `scripts/limpiar_huerfanos_s3.py`, que tuvo que
+cambiar de borrado por lotes a un `delete_object` por cada clave. Ninguna funcion de
+este modulo usa una operacion por lotes hoy; si se agrega una en el futuro (aca o en
+cualquier script de mantenimiento), probarla primero contra el bucket real antes de
+asumir que se comporta como S3 de Amazon.
 """
 
 from __future__ import annotations

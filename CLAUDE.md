@@ -1820,6 +1820,122 @@ sobre por qué compilar con `literal_binds=True` contra el dialecto genérico de
 esa forma de compilar (el dialecto genérico escapa `%` porque su propio paramstyle lo
 usa como marcador de parámetro), no algo que viaje así hasta Postgres.
 
+**Bug real encontrado el 2026-09-25: el segundo factor no valida en producción porque
+Railway tiene `TOTP_MODO=simulado` (o no la fija, que cae al mismo valor por
+defecto), no `real`.** No es un bug de código -- es una variable de entorno que
+falta en Railway. Confirmado de forma empírica y decisiva contra la app real
+desplegada (`https://colcarpeta-aas-production.up.railway.app`, sin tocar Docker ni
+local): con una cuenta de prueba sintética (cédula terminada en 9, así que la
+Registraduría simulada la deja en `PENDIENTE_VERIFICACION` sin llegar nunca a
+`validateCitizen`/`registerCitizen` contra el MinTIC real -- CLAUDE.md, "Prohibido"),
+se inició el enrolamiento del segundo factor y se probaron dos códigos contra
+`POST /api/v1/perfil/totp/confirmar`: el código REAL calculado con `pyotp` a partir
+del secreto que el propio servidor entregó -- **rechazado** (401,
+`SEGUNDO_FACTOR_INVALIDO`) -- y el código fijo `"000000"` -- **aceptado** (204). Eso
+solo pasa si `app.identidad.totp.verificar_codigo` está tomando la rama
+`cfg.totp_modo == "simulado"` (`app/identidad/totp.py`, líneas 39-40), que compara
+contra `TOTP_CODIGO_SIMULADO` sin mirar el secreto del ciudadano en absoluto.
+
+Se descartaron, por revisión de código y por esta misma prueba, las cuatro sospechas
+alternativas que se pidió investigar -- ninguna de las cuatro es el problema, aunque
+las cuatro están bien implementadas:
+
+1. **Regeneración del secreto en cada `GET`**: no ocurre. `GET /perfil/totp`
+   (`app/portal/router_perfil.py`) llama a `perfil_servicios.estado_totp_pendiente`,
+   que **lee** el secreto ya guardado sin tocarlo; solo
+   `POST /perfil/totp/iniciar` (el enlace explícito "Generar un secreto nuevo") llama
+   a `iniciar_enrolamiento_totp`, la única función que sobrescribe
+   `Ciudadano.totp_secret`.
+2. **Parámetros de generación/verificación**: coinciden entre sí y con lo que asume
+   Google Authenticator por defecto (la URI `otpauth://` no declara nada distinto):
+   SHA1, 6 dígitos, período de 30 s. El servidor solo fija `interval` explícitamente
+   (`pyotp.TOTP(ciudadano.totp_secret, interval=cfg.totp_periodo_segundos)`,
+   `TOTP_PERIODO_SEGUNDOS=30` por defecto); `digest`/`digits` se quedan en los
+   valores por defecto de `pyotp`, iguales a los de la app del teléfono.
+3. **Ventana de tolerancia**: `TOTP_TOLERANCIA_PERIODOS=1` por defecto -- acepta el
+   paso actual, uno hacia atrás y uno hacia adelante (~90 s de margen real).
+4. **Codificación del secreto**: se genera con `pyotp.random_base32()`, se guarda tal
+   cual en `Ciudadano.totp_secret` (`String(64)`), y se pasa sin transformar a
+   `pyotp.TOTP(...)` para verificar -- lo que se guarda es exactamente lo que se lee
+   y exactamente lo que se le pasa a la librería, sin una recodificación de por
+   medio en ningún punto.
+
+**Hallazgo aparte, menor, encontrado durante la misma prueba (no es la causa del
+bug reportado):** al enrolar el segundo factor para un ciudadano en
+`PENDIENTE_VERIFICACION` (sin `email_carpeta` todavía, que es `NULL` hasta que se
+confirma la identidad), la URI que se genera queda
+`otpauth://totp/ColCarpeta:None?secret=...` -- el literal `"None"` de Python en la
+etiqueta, porque `uri_otpauth` no contempla `email_carpeta is None`. No afecta al
+caso real reportado (una cuenta ya `ACTIVO` siempre tiene `email_carpeta`), así que
+no se corrigió como parte de esta tarea -- se deja anotado por si alguna vez se
+habilita el segundo factor antes de que la carpeta esté confirmada.
+
+**La corrección real es de configuración, no de código: fijar `TOTP_MODO=real` en
+las variables de entorno de Railway.** Nada en el repositorio necesita cambiar para
+esto -- `TOTP_MODO=simulado` es y debe seguir siendo el valor correcto para
+`docker-compose.test.yml` y para pruebas locales sin un teléfono a mano (así lo
+usan `scripts/probar_portal_segunda_pasada.py` y las pruebas de TOTP de esta
+sesión); el problema es específicamente que producción nunca declaró
+`TOTP_MODO=real` para salir de ese valor por defecto.
+
+`scripts/probar_totp.py`, nuevo: genera un secreto con `pyotp` y prueba
+`app.identidad.totp.verificar_codigo` en aislamiento total -- sin Docker, sin base
+de datos, sin red. Cubre, en modo `TOTP_MODO=real`: el código del paso actual
+(acepta), el mismo código repetido (rechaza, anti-repetición), un código de un
+período atrás (acepta, dentro de la tolerancia), uno de dos períodos atrás (rechaza,
+fuera de tolerancia), un código calculado con un secreto distinto (rechaza), y sin
+ningún secreto enrolado (rechaza cualquier código); y en modo `TOTP_MODO=simulado`:
+el código fijo configurado (acepta) contra un código real de `pyotp` para el mismo
+secreto (rechaza) -- exactamente la asimetría que causó el bug de producción, ahora
+cubierta por una prueba en vez de depender de probar a mano con el teléfono. Los
+ocho casos pasaron. Es el primer script de este proyecto que no necesita Docker,
+base de datos ni red -- se corre con `python scripts/probar_totp.py` sin más.
+
+**Hallazgo estructural, el 2026-09-25: las pruebas de Docker acumulan objetos
+huérfanos de verdad en el bucket S3 real.** `docker-compose.test.yml` (`postgres-a`/
+`postgres-b`, `down -v` al terminar) usa una base de datos desechable pero **el mismo
+bucket S3 real** que produccion (documentado desde el principio: "claves de objeto
+aleatorias, sin riesgo de choque" -- el riesgo que no se había contado era el
+contrario, objetos que sobreviven sin nadie que los reclame). Cada prueba que sube un
+documento de verdad (`probar_carpeta_completa.py`, `probar_firma_digital.py`,
+`probar_firma_transferencia.py`, `probar_portal.py`,
+`probar_portal_segunda_pasada.py`, `probar_envio_transferencia.py`,
+`probar_regreso_antes_de_purga.py`, etc.) deja un objeto real en el bucket que
+**nunca se borra solo**, porque la fila `documento` que lo referenciaba desapareció
+junto con la base desechable. Un barrido de la base y el bucket reales (2026-09-25)
+encontró **295 objetos huérfanos** contra solo 3 documentos reales con fila
+correspondiente. `scripts/limpiar_huerfanos_s3.py`, nuevo: lista (y, con `--borrar`,
+elimina con confirmación) los objetos del bucket sin ninguna fila
+`documento.s3_key` correspondiente -- nunca toca uno que sí tenga fila, así que es
+seguro correrlo con datos reales presentes. No corregido en esta tarea el problema de
+raíz (ninguna prueba de Docker limpia sus propios objetos de S3 al terminar); queda
+como limpieza manual periódica con este script hasta que se decida automatizarla.
+
+**Corrección real el mismo 2026-09-25: `scripts/limpiar_huerfanos_s3.py --borrar`
+falló al primer intento contra el bucket real.** Usaba `delete_objects` (borrado por
+lotes, todas las claves en una sola llamada) y Supabase Storage lo rechazó con un
+`ClientError` sin código ni mensaje. **Supabase Storage es S3-compatible, no es S3**:
+implementa bien las operaciones sobre un solo objeto (`put_object`, `delete_object`,
+`get_object`, `generate_presigned_url` -- las cuatro que usa
+`app/documentos/almacenamiento.py`, la única parte de la aplicación que habla con el
+almacenamiento), pero no soporta `delete_objects`. Verificado que el fallo no borró
+nada (se releyó el bucket real antes de tocar el script: seguía en 298 objetos/295
+huérfanos, sin cambios). Corregido borrando de a un objeto (`delete_object` en un
+bucle, tolerante a fallos: cada clave se intenta por separado, un fallo no bloquea a
+las demás, y al final se listan cuántas se borraron, cuántas ya no existían y cuáles
+fallaron de verdad, con su mensaje, para poder reintentarlas). Confirmado con una
+prueba real y aislada (subir un objeto descartable, borrarlo con `delete_object`,
+confirmar que ya no está, y volver a borrarlo): Supabase sí es idempotente en el
+borrado de a uno, igual que Amazon S3 -- borrar una clave que ya no existe no lanza
+ningún error, así que el script puede correrse de nuevo sin problema sobre lo que ya
+se borró antes. Revisado el resto del proyecto en busca de otra operación por lotes u
+otra que Supabase no soporte igual que S3: ninguna -- `almacenamiento.py` es el único
+módulo que habla con el bucket y las cuatro operaciones que usa son todas de un solo
+objeto; `scripts/limpiar_huerfanos_s3.py` es el único lugar de todo el proyecto que
+alguna vez usó una operación por lotes (`list_objects_v2`, que sí funciona bien
+paginado, y el `delete_objects` ya corregido). Anotado también en el docstring de
+`app/documentos/almacenamiento.py`, para quien agregue una operación nueva ahí.
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio
@@ -1938,6 +2054,7 @@ alembic/versions/              migraciones
 docs/especificacion.md         la especificación completa
 scripts/probar_govcarpeta.py   prueba de humo contra la API real
 scripts/limpiar_prueba.py      borra huella real de una cedula; pide confirmarla escribiendola de nuevo
+scripts/limpiar_huerfanos_s3.py  lista (y con --borrar, elimina) objetos del bucket sin fila de documento correspondiente
 scripts/probar_transferencia.py  simula un operador de origen enviando CU-16 a esta app
 scripts/probar_envio_transferencia.py  CU-03+CU-16 entre dos instancias propias (ver mas abajo)
 scripts/probar_reconciliacion.py  _reconciliar_transferencias en aislamiento, sin esperar horas
@@ -1952,6 +2069,7 @@ scripts/probar_firma_transferencia.py  CU-09 en CU-16: documento certificado por
 scripts/probar_portal.py  portal (AD-11), primera pasada, por las pantallas HTML: registro, login, subir, listar, ver, descargar, eliminar, salir
 scripts/probar_portal_segunda_pasada.py  portal (AD-11), segunda pasada: notificaciones, perfil, segundo factor, sustituir (CU-10) y traslado (CU-03) por las pantallas HTML
 scripts/probar_portal_primer_acceso.py  primer acceso por el portal con un token REAL de una transferencia (usar despues de probar_portal_segunda_pasada.py)
+scripts/probar_totp.py  segundo factor (TOTP) en aislamiento: sin Docker, sin base de datos, sin red
 scripts/mock_centralizador.py  centralizador falso en memoria, solo para esas pruebas
 Dockerfile                     imagen de la app; la usa Railway Y docker-compose.test.yml
 docker-compose.test.yml        solo para probar en Linux en esta maquina (Docker Desktop),
