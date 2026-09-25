@@ -215,14 +215,16 @@ async def listar_documentos(
 ) -> RespuestaListaDocumentos:
     """Busca y clasifica los documentos del ciudadano autenticado (CU-06, CU-07).
 
-    Acepta filtros opcionales por tipo (`tipo`), entidad emisora (`entidad`, coincidencia
-    parcial), rango de fecha de emisión (`desde`/`hasta`), estado de certificación
-    (`certificado`), estado de autenticación ante GovCarpeta (`estado_autenticacion`) y
-    texto en el título (`q`), más paginación (`page`, `size`; tamaño de página máximo
-    100). Devuelve los documentos más recientes primero, junto con el total de
-    resultados que coinciden con los filtros. Solo incluye los documentos vigentes de la
-    carpeta: los reemplazados por una versión más reciente o eliminados no aparecen
-    aquí, aunque siguen siendo consultables por su id.
+    Acepta filtros opcionales por tipo (`tipo`, coincidencia parcial), entidad emisora
+    (`entidad`, coincidencia parcial), rango de fecha de emisión (`desde`/`hasta`),
+    estado de certificación (`certificado`), estado de autenticación ante GovCarpeta
+    (`estado_autenticacion`) y texto en el título (`q`, coincidencia parcial), más
+    paginación (`page`, `size`; tamaño de página máximo 100). Los filtros de texto
+    (`tipo`, `entidad`, `q`) no distinguen mayúsculas de minúsculas ni acentos. Devuelve
+    los documentos más recientes primero, junto con el total de resultados que
+    coinciden con los filtros. Solo incluye los documentos vigentes de la carpeta: los
+    reemplazados por una versión más reciente o eliminados no aparecen aquí, aunque
+    siguen siendo consultables por su id.
     """
     items, total, page, size = await servicios.listar_documentos(
         ciudadano_id=actual.id,

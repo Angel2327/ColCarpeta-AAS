@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_config
 from app.db import SessionLocal
+from app.filtros import ESCAPE, columna_sin_acento_contiene, normalizar_filtro_texto, patron_contiene
 from app.identidad.seguridad import verificar_password
 from app.interoperabilidad.transferencias import resolver_operador_por_host
 from app.models import (
@@ -196,14 +197,26 @@ class FilaCiudadano:
 
 
 async def listar_ciudadanos(
-    *, cedula: str | None, origen: str | None, page: int
+    *, cedula: str | None, nombre: str | None, origen: str | None, page: int
 ) -> tuple[list[FilaCiudadano], int, int]:
     page = max(page, 1)
+    cedula = normalizar_filtro_texto(cedula)
+    nombre = normalizar_filtro_texto(nombre)
     condiciones = []
     if cedula:
         # BigInteger, no admite ILIKE directo: se compara como texto para permitir
-        # busqueda por coincidencia parcial (como el resto de filtros del portal).
-        condiciones.append(cast(Ciudadano.id, String).like(f"%{cedula}%"))
+        # busqueda por coincidencia parcial (como el resto de filtros del portal). Es
+        # solo digitos, asi que no distinguir mayusculas no aplica aqui -- LIKE basta.
+        condiciones.append(cast(Ciudadano.id, String).like(patron_contiene(cedula), escape=ESCAPE))
+    if nombre:
+        # Campo aparte de cedula, no un solo cuadro combinado: son dos identificadores
+        # de naturaleza distinta (uno numerico, uno de texto libre) y la pantalla de
+        # Auditoria ya usa el mismo patron de campos separados por atributo -- mezclar
+        # "busca en cedula o nombre" en un solo campo obligaria a adivinar cual de los
+        # dos se quiso buscar cuando el texto pudiera ser ambiguo. Sin distinguir
+        # acentos (columna_sin_acento_contiene): un nombre real puede escribirse con o
+        # sin tilde segun quien lo escriba.
+        condiciones.append(columna_sin_acento_contiene(Ciudadano.nombre, nombre))
     if origen == FILTRO_ORIGEN_DESCONOCIDO:
         condiciones.append(Ciudadano.origen.is_(None))
     elif origen in (OrigenCiudadano.REGISTRO_DIRECTO.value, OrigenCiudadano.TRANSFERENCIA.value):
@@ -433,11 +446,13 @@ async def listar_auditoria(
     que simplemente no mostrarlo nunca en una consola de solo lectura -- ver la AD
     nueva en docs/especificacion.md."""
     page = max(page, 1)
+    cedula = normalizar_filtro_texto(cedula)
+    accion = normalizar_filtro_texto(accion)
     condiciones = []
     if cedula:
-        condiciones.append(Auditoria.recurso.ilike(f"%{cedula}%"))
+        condiciones.append(Auditoria.recurso.ilike(patron_contiene(cedula), escape=ESCAPE))
     if accion:
-        condiciones.append(Auditoria.accion.ilike(f"%{accion}%"))
+        condiciones.append(Auditoria.accion.ilike(patron_contiene(accion), escape=ESCAPE))
     if desde:
         condiciones.append(Auditoria.momento >= desde)
     if hasta:

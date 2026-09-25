@@ -1692,6 +1692,134 @@ código que `.documento-fila__acciones`, `.acciones` y `.documento-encabezado` t
 `flex-wrap: wrap`, así que las acciones y la pareja título/etiqueta se apilan en vez de
 desbordar en un ancho angosto.
 
+**Filtros de texto normalizados en un solo sitio (`app/filtros.py`), agregado el
+2026-09-24.** El pedido partía de un chequeo ya hecho: título, entidad emisora y
+cédula ya usaban `ILIKE` parcial. Quedaban tres huecos reales, corregidos ahora:
+
+1. **`tipo` en `GET /api/v1/documentos` (y su filtro en `/carpeta`) era el único
+   filtro de texto del portal con comparación exacta** (`Documento.tipo == tipo`).
+   Pasa a `ILIKE` parcial, igual que `entidad`. Docstring de la ruta (documentación
+   pública en `/docs`) actualizado para decirlo.
+2. **La consola de administración solo dejaba filtrar ciudadanos por cédula.** Se
+   agregó "Nombre contiene" (`Ciudadano.nombre`, parcial, sin distinguir mayúsculas)
+   como campo **aparte** de cédula -- no un solo cuadro combinado: son dos
+   identificadores de naturaleza distinta (uno numérico, uno de texto libre) y la
+   pantalla de Auditoría ya usa el mismo patrón de campos separados por atributo, así
+   que mezclarlos habría sido inconsistente y habría obligado a adivinar cuál de los
+   dos se quiso buscar. `app/admin/templates/ciudadanos.html`, `app/admin/router.py` y
+   `app/admin/servicios.listar_ciudadanos` actualizados.
+3. **Ningún filtro de texto trataba un valor de solo espacios como "sin filtro"
+   (filtraba y no devolvía nada), ni escapaba `%`/`_`** -- un título con un `%` de
+   verdad (p. ej. "Descuento 50% aprobado") actuaba como comodín de SQL y ensanchaba
+   la búsqueda en vez de acotarla. Nuevo módulo `app/filtros.py`
+   (`normalizar_filtro_texto`, `patron_contiene`), usado ahora por los seis filtros de
+   texto que existen en la aplicación (`tipo`/`entidad`/`q` en documentos;
+   `cédula`/`nombre` en ciudadanos; `cédula`/`acción` en auditoría) -- un solo lugar
+   con la lógica de recortar espacios, tratar vacío como ausente, y escapar `%`/`_`
+   para no repetirla en cada filtro.
+
+**Revisión completa de filtros de texto en el portal y la consola, pedida
+explícitamente**: los únicos seis filtros de texto de toda la aplicación son los ya
+mencionados arriba, y los seis quedan parciales, sin distinguir mayúsculas, y con la
+misma normalización. El resto de comparaciones `==` que sí quedan en el código sobre
+columnas de texto no son filtros de búsqueda: son identificadores exactos por diseño
+-- `Ciudadano.origen`/`Documento.estado`/`Documento.certificado`/
+`EstadoAutenticacionDocumento` son enums, no texto libre; `Documento.hash_sha256` es
+una comparación de integridad (E5 de CU-05, duplicados); `Outbox.operacion`/
+`Auditoria.accion` en `identidad/servicios.py` y `admin/servicios.py` (fuera del
+filtro de auditoría) son constantes internas del código, nunca un valor que un
+usuario escriba en un campo de búsqueda. El login (`resolver_usuario`, por cédula o
+`email_carpeta`) tampoco es un filtro: es una búsqueda de identidad, donde una
+coincidencia parcial sería un problema de seguridad, no una mejora -- deliberadamente
+fuera del alcance de esta tarea.
+
+**Acentos, investigado y NO implementado a propósito (pendiente de aprobación).**
+"Munoz" no encuentra "Muñoz" hoy, y no se puede arreglar solo en Python sin cambiar
+cómo se filtra en SQL. Se investigó contra la base real de Supabase (consulta de solo
+lectura, con un `CREATE EXTENSION IF NOT EXISTS unaccent` de prueba dentro de una
+transacción que se revirtió siempre -- nunca se hizo `COMMIT`): Postgres 17.6, la
+extensión `unaccent` está disponible (`default_version 1.1`) pero no instalada, el rol
+`postgres` con el que se conecta la aplicación no es superusuario
+(`usesuper = false`, típico de un proyecto gestionado de Supabase) pero **sí tiene
+privilegio para instalar `unaccent`** -- confirmado ejecutándolo de verdad dentro de
+la transacción revertida, sin necesidad de ningún paso manual en el panel de
+Supabase. Recomendación: una migración de Alembic nueva
+(`CREATE EXTENSION IF NOT EXISTS unaccent` / `DROP EXTENSION IF EXISTS unaccent` en el
+downgrade) más envolver ambos lados de los filtros de texto realmente humanos
+(`tipo`, `entidad`, `titulo`, `nombre` -- no `Auditoria.accion`/`recurso`, que son
+vocabulario interno sin acentos) con `func.unaccent(...)`. Costo bajo y ya verificado
+como viable; **no se tocó nada de esto sin aprobación explícita**, como se pidió.
+
+Probado de punta a punta en Docker: `scripts/probar_carpeta_completa.py` extendido con
+seis casos nuevos (tipo parcial y en minúsculas, entidad con mayúsculas y espacios
+sobrantes, un valor de solo espacios equivalente a "sin filtro", y `q="%"` sin
+resultados en vez de traer todo) -- sin fallos. Filtro por nombre de la consola
+verificado con un script ad-hoc (no incorporado a la suite, con
+`ADMIN_PASSWORD_HASH` agregado de forma temporal al entorno de prueba de `app-a` y
+revertido antes de terminar -- `git diff` sobre `docker-compose.test.yml` quedó
+limpio): parcial y en minúsculas, mayúsculas más espacios sobrantes, cédula con
+espacios sobrantes, un valor de solo espacios trayendo a ambos ciudadanos, y `nombre="%"`
+sin resultados. Regresión completa: `scripts/probar_portal.py` y
+`scripts/probar_portal_segunda_pasada.py` (traslado real hasta `CONFIRMADA` incluido)
+sin fallos, confirmando que compartir `documentos_servicios.listar_documentos` entre
+la API JSON y el portal no se rompió.
+
+**Acentos, aprobado e implementado el 2026-09-24 (extensión `unaccent`).** Migración
+`6c5a3c89d46e` (`CREATE EXTENSION IF NOT EXISTS unaccent` / `DROP EXTENSION IF EXISTS
+unaccent` en el downgrade), y `app.filtros.columna_sin_acento_contiene` (envuelve
+ambos lados de la comparación en `func.unaccent(...)`, además del escape de `%`/`_`
+que ya tenía `patron_contiene`) aplicada a los cuatro filtros que una persona escribe
+a mano: `tipo`/`entidad`/`titulo` en documentos y `nombre` en la consola. **`cédula` y
+`acción` de auditoría deliberadamente NO la usan** -- son dígitos y vocabulario
+interno del código respectivamente, nunca texto que alguien escriba con o sin tilde;
+envolverlos en `unaccent` no cambiaría su resultado y solo agregaría una función de
+más en cada consulta.
+
+Esta vez la investigación de privilegios se hizo solo con `SELECT` (`pg_roles`,
+`pg_has_role`) contra la base real, sin ejecutar ningún `CREATE EXTENSION` ahí --
+confirmado que el rol `postgres` es miembro de `pg_database_owner` (dueño de la base),
+que junto con que `unaccent` sea una extensión "trusted" del propio Postgres (desde la
+versión 13) alcanza para instalarla sin superusuario. El `CREATE EXTENSION` en sí
+--para comprobar que corre de verdad-- solo se ejecutó contra `postgres-a`, la base
+desechable de Docker: contra una base limpia (migró de punta a punta junto con las 24
+migraciones anteriores), el downgrade (removió la extensión, confirmado con
+`pg_extension`), y de nuevo el upgrade (la reinstaló) -- los tres sin errores. Se
+repitió el mismo ejercicio, independientemente, al levantar `app-b` desde cero (otra
+base limpia más). Ver la nueva regla en "Prohibido": ya no se ejecuta DDIL alguno
+contra la base real de Supabase, ni siquiera dentro de una transacción revertida.
+
+Nueva regla de docs/especificacion.md — no, esta vez no hizo falta: el comportamiento
+de los filtros (parcial, sin mayúsculas, ahora sin acentos) es un detalle de
+implementación de CU-06/CU-07, ya cubierto por el docstring de la ruta, que se
+actualizó (`GET /api/v1/documentos`, ahora dice "no distinguen mayúsculas de
+minúsculas ni acentos").
+
+Probado de punta a punta en Docker, extendiendo `scripts/probar_carpeta_completa.py`
+con un documento nuevo (`tipo="Académico"`, `entidad_emisora="Bufete Muñoz"`, borrado
+al terminar para no afectar los cálculos de cuota de los pasos siguientes):
+`entidad=munoz` (sin acento) encuentra "Bufete Muñoz", `tipo=academico` (sin acento)
+encuentra tanto "ACADEMICO" como "Académico", `tipo=ACADÉMICO` (con acento,
+mayúsculas) encuentra ambos también, y `entidad=empresa` (un valor sin acentos, contra
+datos sin acentos) sigue encontrando exactamente lo mismo que antes de agregar
+`unaccent` -- sin fallos. El filtro por nombre de la consola se verificó aparte, con
+otro script ad-hoc (mismo patrón de `ADMIN_PASSWORD_HASH` temporal, revertido
+después): "nunez" encuentra "Nuñez", y "PEÑA" (con acento, mayúsculas) también.
+Regresión completa: `scripts/probar_portal.py`, `scripts/probar_portal_segunda_pasada.py`
+(traslado real hasta `CONFIRMADA`) y `scripts/probar_reconciliacion.py` (los cuatro
+escenarios) -- sin fallos.
+
+**El SQL generado se inspeccionó de verdad, compilado con el dialecto real de asyncpg
+(sin ejecutarlo), para confirmar que el escape de `%`/`_` no se quedó solo en el
+string de Python.** Para un valor con un `%` adentro, la sentencia parametrizada que
+sale es `unaccent(documento.titulo) ILIKE unaccent($1::VARCHAR) ESCAPE '\\'`, con el
+parámetro `$1` = `'%Descuento 50\% aprobado%'` (una sola barra invertida delante del
+`%` real, tal como espera `ESCAPE '\\'`) -- nunca una plantilla de texto armada a
+mano. Ver el reporte de la tarea para el detalle completo, incluida la aclaración
+sobre por qué compilar con `literal_binds=True` contra el dialecto genérico de
+`postgresql` (no el de `asyncpg`) muestra el `%` duplicado (`%%`): es un artefacto de
+esa forma de compilar (el dialecto genérico escapa `%` porque su propio paramstyle lo
+usa como marcador de parámetro), no algo que viaje así hasta Postgres.
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio
@@ -1899,6 +2027,20 @@ Estas no están en la documentación del MinTIC y rompen el sistema en silencio:
   procesar de verdad en segundos — borrarla "a tiempo" es una carrera que se pierde
   fácilmente. Para probar esos caminos, inyecta un `GovCarpeta` falso directamente en
   `procesar_lote(...)` en vez de dejar que un servidor vivo la tome.
+- **Nunca ejecutar DDL (`CREATE`/`DROP`/`ALTER`) contra la base real de Supabase fuera
+  de una migración de Alembic explícitamente pedida y aplicada como tal** -- ni
+  siquiera dentro de una transacción que se revierta después. Un `CREATE EXTENSION`
+  de prueba envuelto en un `ROLLBACK` sigue siendo DDL contra producción: no deja
+  rastro permanente, pero corre igual, y esa distinción no vale el riesgo (un
+  `ROLLBACK` que no se ejecuta por un error a mitad de camino, una conexión que se
+  corta, o simplemente el hábito que se generaliza a un DDL que si importa). Para
+  verificar si una extensión está disponible o si el rol tiene privilegio para
+  instalarla, alcanza con `SELECT` de solo lectura contra `pg_available_extensions`,
+  `pg_extension` y los privilegios del rol (`pg_roles`, `information_schema`) -- nunca
+  hace falta ejecutar el `CREATE EXTENSION` mismo para saberlo. Si de verdad hace
+  falta probar que un DDL corre de verdad, se hace contra una base local de Docker
+  (`docker-compose.test.yml`), nunca contra la real. Si algo hiciera falta tocar en la
+  base real fuera de una migración corriente, se pide primero.
 
 ## Decisiones cerradas — no reabrir
 

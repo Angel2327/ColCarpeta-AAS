@@ -146,6 +146,7 @@ async def ciudadanos(request: Request) -> HTMLResponse:
         return redirect
 
     cedula = request.query_params.get("cedula") or None
+    nombre = request.query_params.get("nombre") or None
     origen = request.query_params.get("origen") or None
     try:
         page = max(1, int(request.query_params.get("page", "1")))
@@ -153,7 +154,7 @@ async def ciudadanos(request: Request) -> HTMLResponse:
         page = 1
 
     await _marcar_pantalla_vista(request, "ciudadanos")
-    items, total, page = await servicios.listar_ciudadanos(cedula=cedula, origen=origen, page=page)
+    items, total, page = await servicios.listar_ciudadanos(cedula=cedula, nombre=nombre, origen=origen, page=page)
     return templates.TemplateResponse(
         request,
         "ciudadanos.html",
@@ -164,8 +165,11 @@ async def ciudadanos(request: Request) -> HTMLResponse:
             "page": page,
             "size": servicios.TAMANO_PAGINA,
             "cedula": cedula or "",
+            "nombre": nombre or "",
             "origen": origen or "",
-            "url_pagina": _url_pagina_factory("/admin/ciudadanos", {"cedula": cedula or "", "origen": origen or ""}),
+            "url_pagina": _url_pagina_factory(
+                "/admin/ciudadanos", {"cedula": cedula or "", "nombre": nombre or "", "origen": origen or ""}
+            ),
         },
     )
 

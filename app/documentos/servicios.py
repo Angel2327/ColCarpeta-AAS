@@ -28,6 +28,7 @@ from app.db import SessionLocal
 from app.documentos.almacenamiento import FalloAlmacenamiento, eliminar_objeto, generar_clave, generar_url_descarga, subir_objeto
 from app.documentos.tipos import TIPOS_PERMITIDOS, detectar_content_type
 from app.errors import ErrorDeNegocio
+from app.filtros import columna_sin_acento_contiene, normalizar_filtro_texto
 from app.models import (
     Auditoria,
     Ciudadano,
@@ -238,11 +239,15 @@ async def listar_documentos(
     page = max(page, 1)
     size = max(1, min(size, TAMANO_PAGINA_MAXIMO))
 
+    tipo = normalizar_filtro_texto(tipo)
+    entidad = normalizar_filtro_texto(entidad)
+    q = normalizar_filtro_texto(q)
+
     condiciones = [Documento.ciudadano_id == ciudadano_id, Documento.estado == EstadoDocumento.ACTIVO]
     if tipo:
-        condiciones.append(Documento.tipo == tipo)
+        condiciones.append(columna_sin_acento_contiene(Documento.tipo, tipo))
     if entidad:
-        condiciones.append(Documento.entidad_emisora.ilike(f"%{entidad}%"))
+        condiciones.append(columna_sin_acento_contiene(Documento.entidad_emisora, entidad))
     if desde:
         condiciones.append(Documento.fecha_emision >= _a_datetime_utc(desde))
     if hasta:
@@ -252,7 +257,7 @@ async def listar_documentos(
     if estado_autenticacion is not None:
         condiciones.append(Documento.estado_autenticacion == estado_autenticacion)
     if q:
-        condiciones.append(Documento.titulo.ilike(f"%{q}%"))
+        condiciones.append(columna_sin_acento_contiene(Documento.titulo, q))
 
     async with SessionLocal() as session:
         total = (

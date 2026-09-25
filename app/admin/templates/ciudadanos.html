@@ -9,6 +9,10 @@
     <input type="text" id="cedula_f" name="cedula" value="{{ cedula }}">
   </div>
   <div class="campo">
+    <label for="nombre_f">Nombre contiene</label>
+    <input type="text" id="nombre_f" name="nombre" value="{{ nombre }}">
+  </div>
+  <div class="campo">
     <label for="origen_f">Origen</label>
     <select id="origen_f" name="origen">
       <option value="" {{ "selected" if not origen else "" }}>Cualquiera</option>

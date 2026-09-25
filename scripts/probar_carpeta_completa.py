@@ -169,6 +169,72 @@ async def main() -> None:
         if ids != {doc2["id"]}:
             fallos.append(f"filtro q=laboral: se esperaba solo doc2, llego {ids}")
 
+        print("   ...variantes de los filtros de texto: parcial, mayusculas, espacios, %...")
+        r = await cliente.get("/api/v1/documentos", params={"tipo": "academic"})
+        ids = {d["id"] for d in r.json()["items"]}
+        print(f"   tipo=academic (parcial, minusculas) -> {ids}")
+        if ids != {doc1["id"]}:
+            fallos.append(f"filtro tipo=academic: se esperaba solo doc1 (parcial, sin distinguir mayusculas), llego {ids}")
+
+        r = await cliente.get("/api/v1/documentos", params={"entidad": "  EMPRESA  "})
+        ids = {d["id"] for d in r.json()["items"]}
+        print(f"   entidad='  EMPRESA  ' (mayusculas + espacios sobrantes) -> {ids}")
+        if ids != {doc2["id"]}:
+            fallos.append(f"filtro entidad='  EMPRESA  ': se esperaba solo doc2, llego {ids}")
+
+        r = await cliente.get("/api/v1/documentos", params={"tipo": "   "})
+        ids = {d["id"] for d in r.json()["items"]}
+        print(f"   tipo='   ' (solo espacios, debe tratarse como sin filtro) -> {ids}")
+        if ids != {doc1["id"], doc2["id"]}:
+            fallos.append(f"filtro tipo='   ': un valor de solo espacios deberia equivaler a no filtrar, llego {ids}")
+
+        r = await cliente.get("/api/v1/documentos", params={"q": "%"})
+        ids = {d["id"] for d in r.json()["items"]}
+        print(f"   q='%' (literal, no comodin) -> {ids}")
+        if ids:
+            fallos.append(f"filtro q='%': ningun titulo tiene un '%' literal, se esperaba vacio, llego {ids}")
+
+        print("   ...acentos (extension unaccent, migracion 6c5a3c89d46e)...")
+        r = await cliente.post(
+            "/api/v1/documentos",
+            data={"titulo": "Documento con acentos de prueba", "tipo": "Académico", "entidad_emisora": "Bufete Muñoz"},
+            files={"archivo": ("doc4.pdf", io.BytesIO(PDF_DE_PRUEBA + b"\x01"), "application/pdf")},
+        )
+        if r.status_code != 201:
+            fallos.append(f"doc4 (con acentos): se esperaba 201, llego {r.status_code} {r.text}")
+        doc4 = r.json()
+
+        r = await cliente.get("/api/v1/documentos", params={"entidad": "munoz"})
+        ids = {d["id"] for d in r.json()["items"]}
+        print(f"   entidad=munoz (sin acento, minusculas) -> {ids}")
+        if ids != {doc4["id"]}:
+            fallos.append(f"filtro entidad=munoz: 'munoz' deberia encontrar 'Bufete Muñoz', llego {ids}")
+
+        r = await cliente.get("/api/v1/documentos", params={"tipo": "academico"})
+        ids = {d["id"] for d in r.json()["items"]}
+        print(f"   tipo=academico (sin acento, minusculas) -> {ids}")
+        if ids != {doc1["id"], doc4["id"]}:
+            fallos.append(f"filtro tipo=academico: deberia encontrar 'ACADEMICO' (doc1) y 'Académico' (doc4), llego {ids}")
+
+        r = await cliente.get("/api/v1/documentos", params={"tipo": "ACADÉMICO"})
+        ids = {d["id"] for d in r.json()["items"]}
+        print(f"   tipo=ACADÉMICO (con acento, mayusculas) -> {ids}")
+        if ids != {doc1["id"], doc4["id"]}:
+            fallos.append(f"filtro tipo=ACADÉMICO: deberia encontrar tanto 'ACADEMICO' (doc1) como 'Académico' (doc4), llego {ids}")
+
+        # Una busqueda sin acentos para un valor sin acentos debe seguir funcionando
+        # exactamente igual que antes de agregar unaccent (regresion, no solo caso nuevo).
+        r = await cliente.get("/api/v1/documentos", params={"entidad": "empresa"})
+        ids = {d["id"] for d in r.json()["items"]}
+        print(f"   entidad=empresa (sin acentos, ninguno de los datos los tiene) -> {ids}")
+        if ids != {doc2["id"]}:
+            fallos.append(f"filtro entidad=empresa: una busqueda sin acentos dejo de comportarse como antes, llego {ids}")
+
+        print("   eliminando doc4 (solo era para probar acentos, no debe afectar la cuota de aqui en adelante)...")
+        r = await cliente.delete(f"/api/v1/documentos/{doc4['id']}")
+        if r.status_code != 204:
+            fallos.append(f"eliminar doc4: se esperaba 204, llego {r.status_code}")
+
         r = await cliente.get("/api/v1/documentos", params={"certificado": "false"})
         ids = {d["id"] for d in r.json()["items"]}
         print(f"   certificado=false -> {len(ids)} documento(s)")
