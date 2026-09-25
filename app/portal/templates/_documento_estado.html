@@ -9,18 +9,41 @@
   </div>
 
   {% if doc.firma_valida is not none %}
+  <p>
+    {% if doc.firma_valida %}
+      Se verificó que el documento no cambió desde que se firmó.
+    {% else %}
+      Se revisó la firma digital y no es válida: el documento pudo cambiar después de firmarse, o la firma está mal formada.
+    {% endif %}
+  </p>
+
+  {% if firmante or doc.firma_fecha %}
   <dl class="detalle">
-    <dt>Firma digital</dt>
-    <dd>
-      {% if doc.firma_valida %}
-        Se verificó que el documento no cambió desde que se firmó.
-      {% else %}
-        Se revisó la firma digital y no es válida: el documento pudo cambiar después de firmarse, o la firma está mal formada.
-      {% endif %}
-      {% if doc.firma_firmante %}<br>Firmante declarado: {{ doc.firma_firmante }}{% endif %}
-      {% if doc.firma_fecha %}<br>Fecha de la firma: {{ doc.firma_fecha.strftime("%d/%m/%Y %H:%M") }}{% endif %}
-    </dd>
+    {% if firmante.firmante %}
+    <dt>Firmante</dt>
+    <dd>{{ firmante.firmante }}</dd>
+    {% endif %}
+    {% if firmante.entidad %}
+    <dt>Entidad</dt>
+    <dd>{{ firmante.entidad }}</dd>
+    {% endif %}
+    {% if firmante.pais %}
+    <dt>País</dt>
+    <dd>{{ firmante.pais }}</dd>
+    {% endif %}
+    {% if doc.firma_fecha %}
+    <dt>Fecha de la firma</dt>
+    <dd>{{ doc.firma_fecha.strftime("%d/%m/%Y %H:%M") }}</dd>
+    {% endif %}
   </dl>
+  {% endif %}
+
+  {% if doc.firma_firmante %}
+  <details>
+    <summary>Ver los datos técnicos del certificado</summary>
+    <p class="nota-pequena">{{ doc.firma_firmante }}</p>
+  </details>
+  {% endif %}
   {% elif validando_firma %}
   <p class="nota-pequena">Puedes seguir usando tu carpeta mientras tanto; esta sección se actualiza sola.</p>
   {% endif %}

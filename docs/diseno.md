@@ -17,6 +17,12 @@ contra las clases que ya existen en `app/portal/templates/` y en
 - **El rojo queda reservado para lo irreversible**: trasladarse y eliminar. Nada más.
 - **Los tres estados de firma se distinguen por texto, no solo por color**: firma
   verificada, firma no verificada, sin firma digital.
+- **Lo que viene de un sistema externo se traduce antes de mostrarse.** Un
+  certificado X.509, un código de país, el estado de una API ajena: nada de eso
+  llega en un formato pensado para una persona, y mostrarlo tal cual es jerga, no
+  información. El dato crudo se conserva -- alguien puede necesitar comprobarlo --
+  pero no es lo que se enseña primero: va accesible, nunca destacado (ver "Datos que
+  vienen de un sistema externo", sección 5).
 
 ## 2. Variables
 
@@ -165,7 +171,7 @@ dl.detalle {
 dl.detalle dt { font-weight: 600; }
 dl.detalle dd { margin: 0; }
 
-@media (min-width: 480px) {
+@media (min-width: 800px) {
   dl.detalle {
     grid-template-columns: auto 1fr;   /* la columna de etiquetas mide lo que pida la mas larga */
     column-gap: 1.25rem;
@@ -173,9 +179,50 @@ dl.detalle dd { margin: 0; }
 }
 ```
 
-Por debajo de 480 px se apila entera (una etiqueta larga al lado de su valor no cabe
-sin apretar), pero sigue siendo la misma regla para todos los pares del bloque, no una
-mezcla.
+Por debajo de 800 px se apila entera (etiqueta encima, valor debajo) -- el mismo
+umbral que ya usa `.entrada` para pasar de dos columnas a una (sección 8), reutilizado
+aquí en vez de inventar otro. Con una columna de etiquetas fija a un ancho menor, a un
+teléfono le quedan apenas unos 200 px para el valor, y un nombre largo como "Entidad
+Emisora de Pruebas ColCarpeta" se parte mal en ese espacio -- 480 px no alcanzaba a
+evitarlo. Sigue siendo la misma regla para todos los pares del bloque, no una mezcla.
+
+**Datos que vienen de un sistema externo se traducen antes de mostrarse.** El sujeto
+de un certificado X.509 (CU-09) es el ejemplo real: llega como una sola cadena técnica
+("Common Name: Secretaría General, Organization: Entidad Emisora de Pruebas
+ColCarpeta, Country: CO"), y eso no es lenguaje que un ciudadano deba leer. Se separa
+en sus campos y cada uno se destaca con su propia etiqueta, en la misma rejilla
+`dl.detalle` de arriba -- nunca en una aparte, y nunca varios datos metidos en un solo
+`<dd>` con `<br>` (eso es justo el error que corrigió esta regla: antes "Firmante
+declarado: Common Name: ..., Country: CO" salía como una sola línea de prosa dentro de
+un único par etiqueta/valor):
+
+```
+Firmante    Secretaría General (certificado de prueba)
+Entidad     Entidad Emisora de Pruebas ColCarpeta
+País        Colombia
+```
+
+Un código (país, estado de una API) se traduce a su nombre o a una frase en español;
+uno que no se reconozca se muestra tal cual, nunca se inventa un nombre para él -- ver
+`app.portal.paises.nombre_pais`. El dato crudo completo (el sujeto del certificado tal
+como llegó) sigue disponible para quien quiera comprobarlo, pero detrás de un
+`<details>` cerrado, no como lo primero que se ve:
+
+```html
+<details>
+  <summary>Ver los datos técnicos del certificado</summary>
+  <p class="nota-pequena">{{ doc.firma_firmante }}</p>
+</details>
+```
+
+```css
+details { margin-top: 1rem; }
+summary { cursor: pointer; font-weight: 600; color: var(--color-primario); padding: 0.3rem 0; }
+```
+
+Es la misma pieza que ya usa "Más filtros" en la carpeta (antes `.filtros-avanzados
+summary`, generalizada a `summary` sin más para no repetirla): cualquier `<details>`
+nuevo hereda el mismo resorte visual sin que la pantalla tenga que declarar nada.
 
 **La ayuda que explica qué va a pasar después de enviar un formulario va ENCIMA del
 botón, en su propio párrafo, nunca al lado.** Un botón y un párrafo puestos como

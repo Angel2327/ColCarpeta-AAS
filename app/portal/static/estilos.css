@@ -415,13 +415,18 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 }
 .filtros .campo { margin-bottom: 0; }
 
-.filtros-avanzados { margin: 0.75rem 0 1.25rem; }
-.filtros-avanzados summary {
+/* Cualquier <details> del portal (filtros avanzados, datos tecnicos de un
+   certificado) comparte el mismo resorte visual, en vez de que cada pantalla
+   invente el suyo. */
+details { margin-top: 1rem; }
+summary {
   cursor: pointer;
   font-weight: 600;
   color: var(--color-primario);
   padding: 0.3rem 0;
 }
+
+.filtros-avanzados { margin: 0.75rem 0 1.25rem; }
 .filtros-avanzados .filtros { margin-top: 0.75rem; margin-bottom: 0; }
 
 .lista-documentos { list-style: none; margin: 0; padding: 0; }
@@ -459,10 +464,12 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 /* Pares de etiqueta y valor en una rejilla, nunca apilados y en linea mezclados en el
    mismo bloque: la columna de etiquetas mide lo mismo para todas (el ancho de la mas
    larga, por el "auto" de la primera columna), asi que todos los valores arrancan en
-   la misma vertical. Una sola columna por debajo de 480px -- ahi ya no cabe una
-   etiqueta como "Entidad emisora" al lado de su valor sin apretar demasiado el
-   segundo, asi que se apila entera (misma regla para las dos, sin mezclar dentro de
-   un mismo bloque). */
+   la misma vertical. Apilada (etiqueta encima, valor debajo) por debajo de 800px --
+   el mismo umbral que ya usa .entrada para pasar de dos columnas a una, reutilizado
+   aqui en vez de inventar otro: con una columna de etiquetas fija, a un telefono (e
+   incluso a una tablet angosta) le quedan unos 200px para el valor, y un nombre largo
+   como "Entidad Emisora de Pruebas ColCarpeta" se parte mal en ese espacio. Misma
+   regla para todos los pares del bloque, sin mezclar dentro de un mismo bloque. */
 dl.detalle {
   display: grid;
   grid-template-columns: 1fr;
@@ -472,7 +479,7 @@ dl.detalle {
 dl.detalle dt { font-weight: 600; }
 dl.detalle dd { margin: 0; }
 
-@media (min-width: 480px) {
+@media (min-width: 800px) {
   dl.detalle {
     grid-template-columns: auto 1fr;
     column-gap: 1.25rem;

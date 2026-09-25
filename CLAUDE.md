@@ -1535,6 +1535,95 @@ archivo de la migración (`alembic/versions/567f21d2ce7a_...py`) para que se pue
 reconstruir sin esta conversación delante. Verificado tras aplicarla: los cuatro
 ciudadanos quedaron en `REGISTRO_DIRECTO`, cero siguen en `NULL`.
 
+**El sujeto del certificado en el detalle de un documento se traduce a lenguaje
+llano, y la rejilla de esa pantalla se corrigió, el 2026-09-24.** Antes,
+`documento.firma_firmante` (la cadena técnica de `asn1crypto.x509.Name.human_friendly`,
+p. ej. `"Common Name: Secretaria General, Organization: ..., Country: CO"`) se
+mostraba tal cual, y además tres datos distintos (la explicación de validez, el
+firmante y la fecha) iban apretados dentro de un solo `<dd>` con `<br>` -- ni
+traducido ni alineado con el resto de la pantalla. Nuevo módulo `app/portal/paises.py`
+(tabla ISO 3166-1 alpha-2 → español completa, `nombre_pais(codigo)`, cae al código tal
+cual si no lo reconoce -- nunca inventa un nombre) y `app/portal/router._firmante_legible`
+(con `_campos_sujeto_certificado`, que separa la cadena por sus campos usando el mismo
+separador que `asn1crypto` elige, `", "` o `"; "` según si algún valor ya trae una
+coma). Si no reconoce ninguno de los tres campos esperados (`Common Name`,
+`Organization`, `Country`), cae a mostrar la cadena completa como "Firmante": no
+pierde el dato, pero tampoco pretende haberlo entendido. `_documento_estado.html`
+(CU-09) reemplaza el `<dd>` con `<br>` por una explicación en su propio párrafo, tres
+filas nuevas (Firmante/Entidad/País) en la MISMA rejilla `dl.detalle` que ya usaba la
+pantalla (nunca una aparte), más Fecha de la firma, y el texto crudo del certificado
+detrás de un `<details>` cerrado ("Ver los datos técnicos del certificado") -- nunca
+se pierde el dato exacto, solo deja de ser lo primero que se ve. `.filtros-avanzados
+summary` (la única pieza de "sección colapsable" que ya existía, usada hasta ahora
+solo por "Más filtros" en la carpeta) se generalizó a un `summary` sin calificar, para
+que el `<details>` nuevo herede el mismo resorte visual sin inventar una regla
+paralela. Regla nueva en `docs/diseno.md` (sección 1 y sección 5, "Datos que vienen de
+un sistema externo se traducen antes de mostrarse"): certificados, códigos de país y
+estados de una API ajena se traducen siempre, con el dato crudo conservado pero nunca
+destacado.
+
+Auditado el resto de la pantalla en busca del mismo patrón (revisión pedida
+explícitamente, no solo el bloque de la firma): el otro `dl.detalle` de
+`documento.html` (Tipo/Entidad emisora/Fecha de emisión/Cargado) ya usaba un `dt`/`dd`
+por dato, sin mezclar; `grep` confirmó que `<br>` dentro de un `<dd>` solo aparecía en
+el bloque de la firma en todo `app/portal/templates/` y `app/admin/templates/`, y que
+`dl.detalle` solo se usa en esos dos lugares más `app/admin/templates/resumen.html`
+(que ya respeta la rejilla) -- no había un segundo caso que corregir.
+
+Probado con pyHanko real, no solo con cadenas de ejemplo escritas a mano: se generó un
+certificado autofirmado con `Common Name`, `Organization` y `Country=CO` (mismo patrón
+que `scripts/probar_firma_digital.py`, extendido con los otros dos atributos), se
+firmó un PDF de verdad, se validó con `app.documentos.firma.validar_firma_pdf`, y el
+`firma_firmante` real que produjo -- `"Common Name: Secretaria General (certificado de
+prueba), Organization: Entidad Emisora de Pruebas ColCarpeta, Country: CO"` -- se pasó
+por `_firmante_legible`, dando exactamente `{"firmante": "Secretaria General
+(certificado de prueba)", "entidad": "Entidad Emisora de Pruebas ColCarpeta", "pais":
+"Colombia"}`. Confirmado también con el certificado de un solo campo que ya usa
+`scripts/probar_firma_digital.py` (solo `Common Name`): cae correctamente a mostrar
+únicamente la fila "Firmante", sin "Entidad" ni "País" (ninguno de los dos existe), sin
+error. Renderizado en aislamiento con Jinja2 (sin Docker) para cuatro casos --
+firmado con los tres campos, firmado con solo `Common Name`, sin firma, firma
+inválida con un código de país sin reconocer (`XX`, mostrado tal cual) -- los cuatro
+sin errores de plantilla. Probado de punta a punta en Docker contra `app-a` viva: se
+subió el PDF firmado real (con los tres campos) por el formulario de la carpeta, se
+esperó a que la bandeja de salida completara `validarFirma`, y se confirmó en el HTML
+servido de verdad que aparecen las filas "Firmante", "Entidad" y "País: Colombia" en
+`dl.detalle`, y el sujeto completo dentro del `<details>` -- sin ningún `<br>` suelto
+ni el patrón viejo "Firmante declarado: ...". Regresión:
+`scripts/probar_firma_digital.py` y `scripts/probar_portal.py` (que ejercita el
+detalle de un documento sin firma) sin fallos.
+
+**No se verificó a 390 px con un navegador real ni una captura de pantalla** -- sigue
+sin haber esa herramienta en esta sesión. Se revisó por código: la rejilla nueva
+reutiliza el mismo `dl.detalle` (una sola columna por debajo del umbral, `dt` y `dd`
+apilados, `row-gap: 0.6rem`) que ya usa el resto de la pantalla. Los valores más largos
+("Entidad Emisora de Pruebas ColCarpeta") no tienen `white-space: nowrap` en ningún
+punto de la cadena de estilos, así que envuelven en vez de desbordar. **El umbral en sí
+quedó corregido al día siguiente** (ver el punto que sigue): a 480px, justo donde
+antes cambiaba a dos columnas, apenas quedaban ~200px para el valor -- ni siquiera
+ese ancho alcanzaba a evitar el corte incómodo que esta misma tarea quería resolver.
+
+**`dl.detalle` pasa a apilarse por debajo de 800px, no 480px, corregido el
+2026-09-25 tras señalarse que 480px no alcanzaba.** Con una columna de etiquetas de
+ancho fijo (`auto`), el espacio que le quedaba al valor justo al cruzar los 480px
+-- unos 200px, contando el padding de `.contenedor--estrecho` y de `.tarjeta` -- seguía
+siendo insuficiente para un nombre largo como "Entidad Emisora de Pruebas ColCarpeta"
+(el mismo caso real de la tarea anterior), que se partía mal. Nuevo umbral: 800px,
+igual al que ya usa `.entrada` (sección 8 de docs/diseno.md) para pasar de dos
+columnas a una -- reutilizado a propósito, no inventado, siguiendo el mismo patrón que
+"si ya existe una pieza para esto, úsala" venía aplicando el resto de esta sesión.
+Cambio de un solo número en `app/portal/static/estilos.css`
+(`@media (min-width: 480px)` → `@media (min-width: 800px)`) más la actualización del
+mismo bloque en `docs/diseno.md`; ninguna plantilla cambió. Afecta a los tres lugares
+que comparten `dl.detalle` (`documento.html`, `_documento_estado.html`,
+`app/admin/templates/resumen.html`): los tres se vuelven más conservadores (se apilan
+en un rango de anchos donde antes iban en dos columnas), nunca menos legibles.
+Verificado en Docker que el CSS servido trae el nuevo umbral
+(`curl .../static/estilos.css | grep -A2 dl.detalle`) y que `scripts/probar_portal.py`
+sigue sin fallos (ejercita el detalle de un documento, que usa esta misma rejilla). No
+se verificó con un navegador real a 390px ni a un ancho justo por encima de 800px --
+misma limitación de herramientas que el resto de esta sesión.
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio

@@ -19,6 +19,7 @@ equivalente nueva, por si alguien guardó un enlace.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date
 from pathlib import Path
@@ -36,6 +37,7 @@ from app.identidad import perfil_servicios
 from app.identidad.servicios import RespuestaSesion, SolicitudRegistro, SolicitudSesion, cerrar_sesion, iniciar_sesion, registrar_ciudadano
 from app.portal.auth import borrar_cookie_sesion, ciudadano_actual_portal, fijar_cookie_sesion
 from app.portal.estaticos import url_estatica
+from app.portal.paises import nombre_pais
 
 router = APIRouter(tags=["portal"], include_in_schema=False)
 
@@ -95,6 +97,53 @@ def _parse_fecha(valor: str | None) -> date | None:
         return date.fromisoformat(valor)
     except ValueError:
         return None
+
+
+# --- CU-09: presentacion del firmante de un documento (docs/diseno.md, "Datos que
+# vienen de un sistema externo se traducen antes de mostrarse") ---------------------
+
+# El sujeto de un certificado X.509 llega como una sola cadena tecnica -- p. ej.
+# "Common Name: Secretaria General, Organization: Entidad Emisora de Pruebas
+# ColCarpeta, Country: CO" -- generada por asn1crypto.x509.Name.human_friendly (ver
+# app.documentos.firma). Los campos van separados por ", ", o por "; " si algun valor
+# ya trae una coma; el patron busca esa separacion sin depender de cual de las dos usa,
+# apoyandose en que cada nombre de campo empieza con mayuscula y termina en ": ".
+_PATRON_CAMPOS_SUJETO = re.compile(r"(?:, |; )(?=[A-Z][A-Za-z/ ]*: )")
+
+
+def _campos_sujeto_certificado(bruto: str) -> dict[str, str]:
+    campos: dict[str, str] = {}
+    for parte in _PATRON_CAMPOS_SUJETO.split(bruto):
+        clave, separador, valor = parte.partition(": ")
+        if separador:
+            campos[clave.strip()] = valor.strip()
+    return campos
+
+
+def _firmante_legible(firma_firmante: str | None) -> dict[str, str]:
+    """Traduce el sujeto tecnico del certificado a los tres datos que un ciudadano
+    puede leer: firmante, entidad y pais (este ultimo por su nombre, nunca por el
+    codigo ISO -- ver app.portal.paises.nombre_pais, que muestra el codigo tal cual si
+    no lo reconoce, en vez de inventar un nombre). El texto completo se conserva sin
+    tocar en `documento.firma_firmante`, para quien quiera comprobar el sujeto exacto
+    (ver el <details> de _documento_estado.html) -- esto solo decide que se destaca.
+
+    Si el formato no trae ninguno de los tres campos esperados (Common Name,
+    Organization, Country), cae a mostrar la cadena completa como "firmante": no
+    pierde el dato, pero tampoco pretende haberlo entendido."""
+    if not firma_firmante:
+        return {}
+    campos = _campos_sujeto_certificado(firma_firmante)
+    legible: dict[str, str] = {}
+    if "Common Name" in campos:
+        legible["firmante"] = campos["Common Name"]
+    if "Organization" in campos:
+        legible["entidad"] = campos["Organization"]
+    if "Country" in campos:
+        legible["pais"] = nombre_pais(campos["Country"])
+    if not legible:
+        legible["firmante"] = firma_firmante
+    return legible
 
 
 # --- raiz --------------------------------------------------------------------------
@@ -349,7 +398,14 @@ async def detalle_documento(request: Request, documento_id: uuid.UUID) -> HTMLRe
 
     validando_firma = await documentos_servicios.firma_en_validacion(documento_id=documento_id)
     return templates.TemplateResponse(
-        request, "documento.html", {"ciudadano": ciudadano, "doc": documento, "validando_firma": validando_firma}
+        request,
+        "documento.html",
+        {
+            "ciudadano": ciudadano,
+            "doc": documento,
+            "validando_firma": validando_firma,
+            "firmante": _firmante_legible(documento.firma_firmante),
+        },
     )
 
 
@@ -421,7 +477,11 @@ async def estado_documento(request: Request, documento_id: uuid.UUID) -> HTMLRes
         return HTMLResponse('<div id="documento-estado"></div>')
 
     validando_firma = await documentos_servicios.firma_en_validacion(documento_id=documento_id)
-    return templates.TemplateResponse(request, "_documento_estado.html", {"doc": documento, "validando_firma": validando_firma})
+    return templates.TemplateResponse(
+        request,
+        "_documento_estado.html",
+        {"doc": documento, "validando_firma": validando_firma, "firmante": _firmante_legible(documento.firma_firmante)},
+    )
 
 
 # --- CU-10: sustituir un documento temporal por una version nueva ------------------
