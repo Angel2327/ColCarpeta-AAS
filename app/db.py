@@ -11,7 +11,13 @@ class Base(DeclarativeBase):
 
 
 _config = get_config()
-engine = create_async_engine(_config.sqlalchemy_url, pool_pre_ping=True, echo=False)
+engine = create_async_engine(
+    _config.sqlalchemy_url,
+    pool_pre_ping=True,
+    echo=False,
+    pool_size=_config.db_pool_size,
+    max_overflow=_config.db_max_overflow,
+)
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 

@@ -60,6 +60,245 @@ logger = logging.getLogger("colcarpeta.transferencias")
 MARCADOR_SIN_METADATOS = "metadatos no suministrados por el operador de origen"
 
 
+# Documentacion OpenAPI de las dos rutas del ecosistema. Va por `openapi_extra` y
+# `responses` del decorador -- nunca como modelo Pydantic en la firma -- para que
+# FastAPI solo la publique en /docs sin validar ni parsear nada: el cuerpo se sigue
+# leyendo a mano en `_recibir_transferencia_impl`/`_confirmar_recepcion_impl`, y un
+# cuerpo raro sigue respondiendo nuestro 400 en vez del 422 de FastAPI. Los campos
+# marcados como obligatorios son exactamente los que esas dos funciones rechazan si
+# faltan; si cambia la validacion, hay que cambiar esto tambien.
+_ID_CIUDADANO = {
+    "description": "Número de cédula del ciudadano. Se acepta como número o como texto numérico.",
+    "oneOf": [{"type": "integer"}, {"type": "string", "pattern": "^[0-9]+$"}],
+    "example": 1032236578,
+}
+
+_ESQUEMA_TRANSFER_CITIZEN = {
+    "type": "object",
+    "required": ["id", "confirmAPI"],
+    "additionalProperties": True,
+    "description": (
+        "Formato de intercambio acordado entre los operadores de Carpeta Ciudadana, más "
+        "dos extensiones opcionales (`contactEmail` y `documentsMetadata`) que un operador "
+        "que no las conozca puede omitir. Los campos desconocidos se ignoran."
+    ),
+    "properties": {
+        "id": _ID_CIUDADANO,
+        "citizenName": {
+            "type": "string",
+            "description": "Nombre completo del ciudadano. Opcional: si falta, se registra como `Ciudadano {id}`.",
+            "example": "Carlos Castro",
+        },
+        "citizenEmail": {
+            "type": "string",
+            "format": "email",
+            "description": (
+                "Dirección de carpeta del ciudadano, asignada en su primer registro ante "
+                "cualquier operador. Se adopta tal como llega, sin importar su dominio: es "
+                "su identificador permanente y con ella inicia sesión. Opcional: si falta o "
+                "no tiene formato de correo, no se rechaza la transferencia."
+            ),
+            "example": "carlos.castro@carpetacolombia.co",
+        },
+        "urlDocuments": {
+            "description": (
+                "Enlaces de descarga de los documentos del ciudadano. Deben ser descargables "
+                "sin credenciales (por ejemplo, enlaces firmados con vigencia). El formato "
+                "acordado es ambiguo en este campo, así que se aceptan tres formas: un solo "
+                "enlace como texto, un arreglo de enlaces, o un objeto cuya clave es el "
+                "título del documento y cuyo valor es su enlace. Solo la forma de objeto "
+                "conserva el título real del documento; en las otras dos se titulan "
+                "`Documento 1`, `Documento 2`, etc. Opcional: si falta, el ciudadano se "
+                "recibe sin documentos."
+            ),
+            "oneOf": [
+                {"type": "string", "format": "uri", "title": "Un solo enlace"},
+                {"type": "array", "items": {"type": "string", "format": "uri"}, "title": "Arreglo de enlaces"},
+                {
+                    "type": "object",
+                    "additionalProperties": {"type": "string", "format": "uri"},
+                    "title": "Objeto título → enlace",
+                },
+            ],
+        },
+        "confirmAPI": {
+            "type": "string",
+            "format": "uri",
+            "description": (
+                "URL del operador de origen donde se notificará el resultado de la "
+                "recepción con `POST` y el cuerpo `{\"id\": ..., \"req_status\": 1 | 0}`."
+            ),
+            "example": "https://operador-origen.example.com/api/transferCitizenConfirm",
+        },
+        "contactEmail": {
+            "type": "string",
+            "format": "email",
+            "description": (
+                "Extensión opcional: correo personal de contacto del ciudadano (distinto de "
+                "`citizenEmail`). Si viene, se usa para enviarle el enlace con el que "
+                "establece su contraseña en ColCarpeta."
+            ),
+            "example": "carlos.castro@gmail.com",
+        },
+        "documentsMetadata": {
+            "type": "array",
+            "description": (
+                "Extensión opcional: metadatos de cada documento. Si los elementos traen "
+                "`titulo` y `urlDocuments` llegó como objeto, se emparejan por título; si "
+                "no, por posición en el mismo orden de `urlDocuments`. Un documento sin "
+                "metadatos se guarda igual, marcado como sin metadatos del operador de "
+                "origen."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": True,
+                "properties": {
+                    "titulo": {"type": "string", "description": "Título del documento (también se acepta `title`)."},
+                    "tipo": {"type": "string", "example": "Diploma"},
+                    "entidadEmisora": {
+                        "type": ["string", "null"],
+                        "description": "También se acepta `entidad_emisora`.",
+                        "example": "Universidad EAFIT",
+                    },
+                    "fechaEmision": {
+                        "type": ["string", "null"],
+                        "format": "date",
+                        "description": "También se acepta `fecha_emision`.",
+                        "example": "2024-12-13",
+                    },
+                    "certificado": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Si el operador de origen lo declara certificado. Si el "
+                            "documento trae una firma digital y resulta inválida, esta "
+                            "condición se retira."
+                        ),
+                    },
+                },
+            },
+        },
+    },
+}
+
+_EJEMPLOS_TRANSFER_CITIZEN = {
+    "objeto": {
+        "summary": "urlDocuments como objeto título → enlace, con extensiones",
+        "value": {
+            "id": 1032236578,
+            "citizenName": "Carlos Castro",
+            "citizenEmail": "carlos.castro@carpetacolombia.co",
+            "urlDocuments": {
+                "Diploma de grado": "https://operador-origen.example.com/descargas/diploma.pdf?firma=...",
+                "Cedula": "https://operador-origen.example.com/descargas/cedula.pdf?firma=...",
+            },
+            "confirmAPI": "https://operador-origen.example.com/api/transferCitizenConfirm",
+            "contactEmail": "carlos.castro@gmail.com",
+            "documentsMetadata": [
+                {
+                    "titulo": "Diploma de grado",
+                    "tipo": "Diploma",
+                    "entidadEmisora": "Universidad EAFIT",
+                    "fechaEmision": "2024-12-13",
+                    "certificado": True,
+                },
+                {"titulo": "Cedula", "tipo": "Identificación", "certificado": False},
+            ],
+        },
+    },
+    "arreglo": {
+        "summary": "urlDocuments como arreglo de enlaces, sin extensiones",
+        "value": {
+            "id": "1032236578",
+            "citizenName": "Carlos Castro",
+            "citizenEmail": "carlos.castro@otrooperador.co",
+            "urlDocuments": [
+                "https://operador-origen.example.com/descargas/1.pdf",
+                "https://operador-origen.example.com/descargas/2.pdf",
+            ],
+            "confirmAPI": "https://operador-origen.example.com/api/transferCitizenConfirm",
+        },
+    },
+    "texto": {
+        "summary": "urlDocuments como un solo enlace",
+        "value": {
+            "id": 1032236578,
+            "citizenName": "Carlos Castro",
+            "citizenEmail": "carlos.castro@otrooperador.co",
+            "urlDocuments": "https://operador-origen.example.com/descargas/1.pdf",
+            "confirmAPI": "https://operador-origen.example.com/api/transferCitizenConfirm",
+        },
+    },
+}
+
+_ESQUEMA_TRANSFER_CITIZEN_CONFIRM = {
+    "type": "object",
+    "required": ["id", "req_status"],
+    "additionalProperties": True,
+    "properties": {
+        "id": {**_ID_CIUDADANO, "description": "Número de cédula del ciudadano transferido. Se acepta como número o como texto numérico."},
+        "req_status": {
+            "description": (
+                "`1`: el operador destino recibió al ciudadano y lo afilió. `0`: no se pudo "
+                "recibir, y el ciudadano vuelve a quedar activo en ColCarpeta. Cualquier "
+                "valor numérico distinto de `1` se trata como `0`. Se acepta como número o "
+                "como texto numérico."
+            ),
+            "oneOf": [{"type": "integer", "enum": [0, 1]}, {"type": "string", "enum": ["0", "1"]}],
+            "example": 1,
+        },
+    },
+}
+
+
+def _respuestas_ecosistema(mensajes_400: list[str]) -> dict:
+    """Respuestas documentadas de las dos rutas del ecosistema, con los cuerpos que de
+    verdad devuelven (ninguna usa el sobre `{"error": {...}}` de app/errors.py)."""
+    error_plano = {
+        "type": "object",
+        "required": ["error"],
+        "properties": {"error": {"type": "string"}},
+    }
+    return {
+        200: {
+            "description": "Solicitud aceptada. Se responde igual aunque luego se descarte por repetida.",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["received"],
+                        "properties": {"received": {"type": "boolean", "enum": [True]}},
+                    },
+                    "example": {"received": True},
+                }
+            },
+        },
+        400: {
+            "description": "El cuerpo no es un objeto JSON o le falta un campo obligatorio, o tiene uno con un valor inválido.",
+            "content": {
+                "application/json": {
+                    "schema": {**error_plano, "properties": {"error": {"type": "string", "enum": mensajes_400}}},
+                    "examples": {m.replace(" ", "_"): {"value": {"error": m}} for m in mensajes_400},
+                }
+            },
+        },
+        405: {
+            "description": "Se usó un método HTTP distinto de `POST`.",
+            "headers": {"Allow": {"description": "Métodos permitidos.", "schema": {"type": "string", "example": "POST"}}},
+            "content": {
+                "application/json": {
+                    "schema": {"type": "object", "properties": {"detail": {"type": "string"}}},
+                    "example": {"detail": "Method Not Allowed"},
+                }
+            },
+        },
+        500: {
+            "description": "Error interno no previsto.",
+            "content": {"application/json": {"schema": error_plano, "example": {"error": "error interno"}}},
+        },
+    }
+
+
 def _correlation_id(request: Request) -> str | None:
     return getattr(request.state, "correlation_id", None)
 
@@ -151,7 +390,18 @@ def _email_valido(valor: object) -> bool:
     return isinstance(valor, str) and "@" in valor and not valor.startswith("@") and not valor.endswith("@")
 
 
-@router.post("/transferCitizen")
+@router.post(
+    "/transferCitizen",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {"schema": _ESQUEMA_TRANSFER_CITIZEN, "examples": _EJEMPLOS_TRANSFER_CITIZEN}
+            },
+        }
+    },
+    responses=_respuestas_ecosistema(["cuerpo invalido", "id invalido", "confirmAPI requerido"]),
+)
 async def recibir_transferencia(request: Request) -> JSONResponse:
     """Recibe la transferencia de un ciudadano desde otro operador de Carpeta
     Ciudadana.
@@ -319,7 +569,24 @@ def _origen_coincide(request: Request, operador: OperadorCache) -> bool:
     return request.client.host in ips_operador
 
 
-@router.post("/transferCitizenConfirm")
+@router.post(
+    "/transferCitizenConfirm",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": _ESQUEMA_TRANSFER_CITIZEN_CONFIRM,
+                    "examples": {
+                        "recibido": {"summary": "Recibido", "value": {"id": 1032236578, "req_status": 1}},
+                        "no_recibido": {"summary": "No se pudo recibir", "value": {"id": 1032236578, "req_status": 0}},
+                    },
+                }
+            },
+        }
+    },
+    responses=_respuestas_ecosistema(["cuerpo invalido", "id o req_status invalido"]),
+)
 async def confirmar_recepcion(request: Request) -> JSONResponse:
     """Recibe la confirmación de una transferencia enviada previamente a otro
     operador.

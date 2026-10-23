@@ -7,3 +7,13 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .DS_Store
+/ejemplos documento
+Comandos_demostracion_ColCarpeta.txt
+Comandos_demostracion_Kubernetes.txt
+
+# Kubernetes (k8s/): el Secret real nunca se versiona, solo su plantilla
+# (secret.example.yaml). Si alguna vez se genera un k8s/secret.yaml real a mano
+# (en vez del archivo intermedio fuera del repo que usa el flujo documentado en
+# k8s/README.md), tampoco debe versionarse.
+k8s/secret.yaml
+k8s/*.secret.env

@@ -9,6 +9,14 @@ class Config(BaseSettings):
 
     # base de datos
     database_url: str = "postgresql://postgres:postgres@localhost:5432/postgres"
+    # Conexiones por proceso hacia Supabase: pool_size (persistentes) + max_overflow
+    # (extra bajo demanda, se cierran al liberarse). Default conservador a proposito
+    # (3+2=5 por proceso) para que correr varias replicas (p. ej. 3 en Kubernetes) no
+    # agote el limite de conexiones concurrentes de Supabase -- antes no se fijaba
+    # ninguno de los dos y SQLAlchemy caia en su default (pool_size=5, max_overflow=10,
+    # hasta 15 por proceso), que con 3 replicas ya son 45 conexiones.
+    db_pool_size: int = 3
+    db_max_overflow: int = 2
 
     # almacenamiento de objetos
     s3_endpoint: str = ""

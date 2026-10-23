@@ -1,0 +1,14 @@
+# NodePort, no LoadBalancer: en minikube, LoadBalancer se queda sin IP externa (en
+# "pending") a menos que se corra "minikube tunnel" aparte -- NodePort es lo que
+# funciona de forma directa aqui. Se accede con "minikube service colcarpeta --url".
+apiVersion: v1
+kind: Service
+metadata:
+  name: colcarpeta
+spec:
+  type: NodePort
+  selector:
+    app: colcarpeta
+  ports:
+    - port: 8000
+      targetPort: 8000

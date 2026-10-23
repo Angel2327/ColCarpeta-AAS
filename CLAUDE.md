@@ -1936,6 +1936,21 @@ alguna vez usó una operación por lotes (`list_objects_v2`, que sí funciona bi
 paginado, y el `delete_objects` ya corregido). Anotado también en el docstring de
 `app/documentos/almacenamiento.py`, para quien agregue una operación nueva ahí.
 
+**Cuerpo de las dos rutas del ecosistema documentado en `/openapi.json`, el
+2026-10-07.** `POST /api/transferCitizen` y `POST /api/transferCitizenConfirm` eran
+las únicas rutas sin `requestBody` en el esquema. Ahora lo declaran por `openapi_extra`
+(más `responses=` para 200/400/405/500), sin modelo Pydantic en la firma: FastAPI no
+valida ni parsea nada, el cuerpo se sigue leyendo a mano y un cuerpo raro sigue dando
+nuestro 400, nunca un 422 (verificado comparando 15 cuerpos/métodos inválidos antes y
+después: respuestas idénticas byte a byte). Obligatorios documentados = los que el
+código de verdad rechaza: `id` y `confirmAPI` en el primero (`urlDocuments`,
+`citizenName` y `citizenEmail` son opcionales en la práctica), `id` y `req_status` en
+el segundo. `urlDocuments` se documenta con las **tres** formas que acepta el código
+(texto, arreglo, objeto título→enlace), no dos. El 405 se documenta tal como sale hoy:
+`{"detail": "Method Not Allowed"}` de FastAPI, no `{"error": ...}`. Si cambia la
+validación de esas dos funciones, hay que cambiar los esquemas
+(`_ESQUEMA_TRANSFER_CITIZEN*` en `app/interoperabilidad/transferencias.py`).
+
 ### Pendiente
 
 **Entrega por correo cuando el destino no publica `transferAPIURL`** (spec, "Directorio

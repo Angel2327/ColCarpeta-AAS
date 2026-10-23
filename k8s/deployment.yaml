@@ -1,0 +1,58 @@
+# Despliegue adicional en minikube, evidencia de varias replicas corriendo en paralelo
+# (Railway sigue siendo el despliegue publico real -- ver k8s/README.md). Las 3 replicas
+# son seguras porque el despachador de la bandeja de salida usa
+# "SELECT ... FOR UPDATE SKIP LOCKED" (app/interoperabilidad/outbox.py): varias replicas
+# pueden correrlo al mismo tiempo sin duplicar trabajo.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: colcarpeta
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: colcarpeta
+  template:
+    metadata:
+      labels:
+        app: colcarpeta
+    spec:
+      containers:
+        - name: colcarpeta
+          # Imagen construida y cargada a mano en minikube (sin registro):
+          #   docker build -t colcarpeta:local .
+          #   minikube image load colcarpeta:local
+          image: colcarpeta:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: colcarpeta-config
+            - secretRef:
+                name: colcarpeta-secret
+          # /health no consulta la base de datos (ver app/main.py) -- confirma solo que
+          # el proceso de uvicorn esta vivo y respondiendo, no que Supabase es alcanzable.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            # 3 replicas * limits = 1.5 CPU / 1536Mi -- caben con margen en un
+            # cluster de 4 CPU / 4096Mi.
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

@@ -1,0 +1,83 @@
+# Configuracion NO sensible de ColCarpeta para el despliegue adicional en minikube
+# (evidencia de que la aplicacion corre con varias replicas -- Railway sigue siendo el
+# despliegue publico real, esto no lo reemplaza). Valores reales, los mismos que ya
+# usa la aplicacion hoy: los que estan fijados explicitamente en el .env local se
+# copiaron tal cual; los que no, son el default real de app/config.py (Config), que
+# es el valor que ya esta en efecto de todas formas.
+#
+# Lo que SI es sensible (credenciales de base de datos, claves S3, llaves JWT, el hash
+# de la consola de administracion) va en el Secret, nunca aqui -- ver secret.example.yaml
+# y k8s/README.md para como generarlo desde el .env real sin que quede en el repositorio.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: colcarpeta-config
+data:
+  # Leida directamente por el CMD del Dockerfile (uvicorn --port ${PORT:-8000}), no
+  # por app/config.py -- igual que en Railway, que tambien la inyecta.
+  PORT: "8000"
+
+  # Conexiones por proceso hacia Supabase (ver app/db.py, app/config.py). Con 3
+  # replicas, (3+2)*3 = 15 conexiones en total contra el pooler de Supabase.
+  DB_POOL_SIZE: "3"
+  DB_MAX_OVERFLOW: "2"
+
+  # Almacenamiento (Supabase, el mismo bucket real que usa Railway)
+  S3_ENDPOINT: "https://elslzovvzyoeflloccad.storage.supabase.co/storage/v1/s3"
+  S3_REGION: "us-west-2"
+  S3_BUCKET: "documentos"
+
+  # Operador (identidad real ante el MinTIC -- es el mismo operador que Railway, solo
+  # cambia donde corre el computo; ver CLAUDE.md, "Identidad del operador")
+  OPERATOR_ID: "6aaeb415b765590002607402"
+  OPERATOR_NAME: "ColCarpeta"
+  GOVCARPETA_URL: "https://govcarpeta-apis-4905ff3c005b.herokuapp.com"
+  # Se deja apuntando a Railway a proposito: es la URL publica real de este operador.
+  # Este cluster de minikube no recibe trafico publico ni confirmaciones de traslado
+  # entrantes (CU-03) -- las restricciones de esta tarea excluyen cualquier operacion
+  # de escritura, asi que este valor nunca se ejercita de verdad aqui.
+  PUBLIC_BASE_URL: "https://colcarpeta-aas-production.up.railway.app"
+  DOMINIO_CARPETA: "carpetacolombia.co"
+
+  # Sesion
+  JWT_MINUTOS: "30"
+  INTENTOS_LOGIN_MAXIMOS: "5"
+  INTENTOS_LOGIN_VENTANA_MINUTOS: "15"
+  BLOQUEO_LOGIN_MINUTOS: "15"
+
+  # Segundo factor
+  TOTP_MODO: "real"
+  TOTP_PENDIENTE_MINUTOS: "15"
+  TOTP_PERIODO_SEGUNDOS: "30"
+  TOTP_TOLERANCIA_PERIODOS: "1"
+
+  # Limites
+  CUOTA_CIUDADANO_BYTES: "209715200"
+  TAMANO_MAXIMO_ARCHIVO_BYTES: "20971520"
+  PRESIGNED_URL_TTL_AUTH: "900"
+  PRESIGNED_URL_TTL_TRANSFER: "86400"
+  PRESIGNED_URL_TTL_DESCARGA: "300"
+  TRANSFER_CONFIRM_TIMEOUT: "14400"
+  PURGE_DELAY_DAYS: "30"
+  OUTBOX_INTERVALO_SEGUNDOS: "10"
+  OUTBOX_EN_PROCESO_MAXIMO_SEGUNDOS: "900"
+  TRANSFERENCIA_DOCUMENTOS_MAXIMO: "200"
+  TRANSFERENCIA_TAMANO_MAXIMO_BYTES: "524288000"
+  DIRECTORIO_OPERADORES_REFRESCO_SEGUNDOS: "900"
+  # SIEMPRE true -- CLAUDE.md, "nunca en .env real ni en Railway". Este cluster no es
+  # la excepcion: no hay ninguna razon de TLS entre contenedores que lo justifique aqui.
+  TRANSFERENCIA_EXIGIR_HTTPS: "true"
+  OPERADORES_EXCLUIDOS: ""
+  PRIMER_ACCESO_TOKEN_TTL_HORAS: "24"
+  PRIMER_ACCESO_REENVIO_MAXIMO: "3"
+  PRIMER_ACCESO_REENVIO_VENTANA_MINUTOS: "15"
+  # SIEMPRE true -- mismo motivo que TRANSFERENCIA_EXIGIR_HTTPS. El Service de este
+  # despliegue es HTTP simple (NodePort sin TLS), asi que la cookie del portal nunca
+  # se enviaria de todas formas al probarlo con un navegador real -- ver k8s/README.md.
+  PORTAL_COOKIE_SECURE: "true"
+  NOTIFICACIONES_CONTADOR_INTERVALO_SEGUNDOS: "600"
+
+  # Registraduria simulada: no es un secreto real -- es la clave interna con la que el
+  # propio proceso se autentica contra su propio mock (app/mock/registraduria.py), sin
+  # ninguna parte externa de por medio. Ya viaja en claro en .env.example.
+  REGISTRADURIA_API_KEY: "clave-interna-de-desarrollo"
